@@ -1,0 +1,6 @@
+node_modules
+dist
+DEPENDENCY-FIX-GUIDE.md
+fix-dependencies.ps1
+package.json.backup
+package.json.fixed

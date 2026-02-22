@@ -1,0 +1,175 @@
+{
+  "$schema": "./agents.schema.json",
+  "version": "1.0.0",
+  "agents": [
+    {
+      "id": "claude-001",
+      "name": "Claude",
+      "model": "anthropic/claude-3-sonnet",
+      "type": "claude",
+      "enabled": true,
+      "role": "架构设计与编码实现",
+      "description": "专业的软件架构师和全栈开发工程师，擅长系统设计、代码实现和技术选型",
+      "capabilities": [
+        "架构设计",
+        "代码生成",
+        "重构优化",
+        "技术选型",
+        "最佳实践建议"
+      ],
+      "callType": "http",
+      "config": {
+        "apiProvider": "openrouter",
+        "baseURL": "https://openrouter.ai/api/v1",
+        "temperature": 0.7,
+        "maxTokens": 4000,
+        "timeout": 60000
+      },
+      "decision": {
+        "keywords": [
+          "架构",
+          "设计",
+          "实现",
+          "编码",
+          "代码",
+          "重构",
+          "优化",
+          "技术栈",
+          "选型"
+        ],
+        "autoRespond": true,
+        "priority": "high",
+        "mentionRequired": false
+      },
+      "prompts": {
+        "systemPrompt": "你是Claude，一个专业的软件架构师和全栈开发工程师。\n你的职责是：\n1. 设计系统架构\n2. 编写高质量代码\n3. 提供技术选型建议\n4. 进行代码重构\n\n请用专业、严谨的方式回答问题，提供可执行的代码示例。",
+        "contextTemplate": "当前会话: {{sessionId}}\n最近对话:\n{{conversationHistory}}\n\n工作空间状态:\n{{workspaceState}}"
+      }
+    },
+    {
+      "id": "codex-001",
+      "name": "Codex",
+      "model": "codex-cli",
+      "type": "codex",
+      "enabled": true,
+      "role": "代码审查与质量把控",
+      "description": "专注于代码审查、测试、质量把控和最佳实践检查",
+      "capabilities": [
+        "代码审查",
+        "静态分析",
+        "测试建议",
+        "安全检查",
+        "性能分析",
+        "代码规范检查"
+      ],
+      "callType": "cli",
+      "config": {
+        "cliPath": "codex-cli",
+        "args": [
+          "--format",
+          "json",
+          "--timeout",
+          "60"
+        ],
+        "timeout": 60000,
+        "maxRetries": 3
+      },
+      "decision": {
+        "keywords": [
+          "审查",
+          "检查",
+          "测试",
+          "质量",
+          "bug",
+          "问题",
+          "优化",
+          "性能",
+          "安全"
+        ],
+        "autoRespond": true,
+        "priority": "medium",
+        "mentionRequired": false,
+        "triggerOnCodeChange": true
+      },
+      "prompts": {
+        "systemPrompt": "你是Codex，一个专业的代码审查专家。\n你的职责是：\n1. 审查代码质量\n2. 发现潜在bug\n3. 提供测试建议\n4. 检查安全问题\n5. 优化性能\n\n请用批判性思维审查代码，指出具体问题并提供改进建议。",
+        "contextTemplate": "当前文件: {{filePath}}\n代码变更:\n{{codeChange}}\n\n相关上下文:\n{{relatedCode}}"
+      }
+    },
+    {
+      "id": "gemini-001",
+      "name": "Gemini",
+      "model": "gemini-pro",
+      "type": "gemini",
+      "enabled": true,
+      "role": "创意发散与视觉设计",
+      "description": "擅长创意思维、UI/UX设计建议、视觉效果和用户体验优化",
+      "capabilities": [
+        "创意思维",
+        "UI设计建议",
+        "UX优化",
+        "视觉效果",
+        "交互设计",
+        "用户体验"
+      ],
+      "callType": "cli",
+      "config": {
+        "cliPath": "gemini",
+        "args": [
+          "--model",
+          "gemini-pro",
+          "--format",
+          "json"
+        ],
+        "temperature": 0.8,
+        "maxTokens": 4000,
+        "timeout": 60000
+      },
+      "decision": {
+        "keywords": [
+          "设计",
+          "UI",
+          "UX",
+          "界面",
+          "视觉",
+          "交互",
+          "用户体验",
+          "创意",
+          "美化",
+          "样式"
+        ],
+        "autoRespond": true,
+        "priority": "medium",
+        "mentionRequired": false
+      },
+      "prompts": {
+        "systemPrompt": "你是Gemini，一个富有创意的UI/UX设计专家。\n你的职责是：\n1. 提供UI设计建议\n2. 优化用户体验\n3. 提供创意思路\n4. 评估视觉效果\n5. 改进交互设计\n\n请用创造性思维提供建议，关注用户感受和视觉美感。",
+        "contextTemplate": "当前界面: {{currentView}}\n用户反馈: {{userFeedback}}\n\n设计目标:\n{{designGoals}}"
+      }
+    }
+  ],
+  "global": {
+    "decisionEngine": {
+      "mode": "parallel",
+      "timeout": 5000,
+      "maxConcurrent": 3,
+      "fallbackAgent": "claude-001"
+    },
+    "memory": {
+      "shortTermSize": 20,
+      "longTermEnabled": true,
+      "sharedMemoryEnabled": true
+    },
+    "response": {
+      "streamEnabled": true,
+      "maxResponseTime": 60000,
+      "retryOnFailure": true,
+      "maxRetries": 3
+    },
+    "workspace": {
+      "watchFiles": true,
+      "autoAnalyze": true,
+      "transcriptEnabled": true
+    }
+  }
+}
