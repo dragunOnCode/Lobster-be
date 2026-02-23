@@ -10,6 +10,7 @@ import { ChatModule } from './chat/chat.module';
 import { MemoryModule } from './memory/memory.module';
 import { LobsterConfigModule } from './config/config.module';
 import { TasksModule } from './tasks/tasks.module';
+import { VectorModule } from './vector/vector.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { TasksModule } from './tasks/tasks.module';
     MemoryModule,
     LobsterConfigModule,
     TasksModule,
+    VectorModule,
   ],
   controllers: [AppController],
   providers: [AppService],
