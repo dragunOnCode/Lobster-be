@@ -14,6 +14,13 @@ export interface SharedMemory {
   metadata?: Record<string, unknown>;
 }
 
+export interface SemanticContextItem {
+  id: string;
+  content: string;
+  similarity: number;
+  timestamp?: string;
+}
+
 export interface WorkspaceChangeEvent {
   type: 'file_created' | 'file_updated' | 'file_deleted';
   path: string;
@@ -26,6 +33,8 @@ export interface AgentContext {
   sessionId: string;
   userId?: string;
   conversationHistory?: Message[];
+  semanticContext?: SemanticContextItem[];
+  summaries?: string[];
   sharedMemory?: SharedMemory;
   workspaceChange?: WorkspaceChangeEvent;
 }

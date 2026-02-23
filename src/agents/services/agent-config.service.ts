@@ -5,6 +5,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { AgentService } from './agent.service';
 import { CliRunnerService } from './cli-runner.service';
+import { ContextBuilderService } from './context-builder.service';
 import { ClaudeAdapter } from '../adapters/claude.adapter';
 import { CodexAdapter } from '../adapters/codex.adapter';
 import { GeminiAdapter } from '../adapters/gemini.adapter';
@@ -79,6 +80,7 @@ export class AgentConfigService implements OnModuleInit {
     private readonly httpService: HttpService,
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
+    private readonly contextBuilder: ContextBuilderService,
   ) {
     this.configPath = path.resolve(process.cwd(), 'config', 'agents.config.json');
   }
@@ -123,7 +125,7 @@ export class AgentConfigService implements OnModuleInit {
   private createBaseAdapter(type: string): ILLMAdapter {
     switch (type) {
       case 'claude':
-        return new ClaudeAdapter(this.httpService, this.configService);
+        return new ClaudeAdapter(this.httpService, this.configService, this.contextBuilder);
       case 'codex':
         return new CodexAdapter(this.cliRunner, this.configService);
       case 'gemini':

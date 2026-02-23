@@ -1,8 +1,9 @@
 import { HttpService } from '@nestjs/axios';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { AgentContext, AgentResponse, AgentStatus, DecisionResult, ILLMAdapter, Message } from '../interfaces';
+import { ContextBuilderService } from '../services/context-builder.service';
 
 interface OpenRouterResponse {
   choices?: Array<{
@@ -36,10 +37,12 @@ export class ClaudeAdapter implements ILLMAdapter {
   readonly callType = 'http';
 
   private status: AgentStatus = AgentStatus.OFFLINE;
+  private readonly logger = new Logger(ClaudeAdapter.name);
 
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    private readonly contextBuilder?: ContextBuilderService,
   ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
@@ -55,6 +58,10 @@ export class ClaudeAdapter implements ILLMAdapter {
     this.status = AgentStatus.BUSY;
 
     try {
+      const enhancedContext = await this.buildEnhancedContext(prompt, context);
+      this.logger.debug(
+        `Prompt context session=${enhancedContext.sessionId} semanticItems=${enhancedContext.semanticContext?.length ?? 0} summaries=${enhancedContext.summaries?.length ?? 0}`,
+      );
       const { data } = await firstValueFrom(
         this.httpService.post<OpenRouterResponse>(
           apiUrl,
@@ -63,11 +70,11 @@ export class ClaudeAdapter implements ILLMAdapter {
             messages: [
               {
                 role: 'system',
-                content: this.buildSystemPrompt(context),
+                content: this.buildSystemPrompt(enhancedContext),
               },
               {
                 role: 'user',
-                content: prompt,
+                content: this.buildUserPrompt(prompt, enhancedContext),
               },
             ],
             temperature,
@@ -208,6 +215,11 @@ export class ClaudeAdapter implements ILLMAdapter {
   }
 
   private buildSystemPrompt(context: AgentContext): string {
+    const summaryBlock =
+      context.summaries && context.summaries.length > 0
+        ? `\n相关历史摘要:\n${context.summaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}`
+        : '';
+
     return [
       '你是Claude，一个专业的软件架构师和全栈开发工程师。',
       '你的职责是：',
@@ -217,7 +229,50 @@ export class ClaudeAdapter implements ILLMAdapter {
       '4. 进行代码重构',
       '',
       `当前会话ID: ${context.sessionId}`,
+      summaryBlock,
       '请用专业、严谨、可执行的方式回答问题。',
     ].join('\n');
+  }
+
+  private buildUserPrompt(prompt: string, context: AgentContext): string {
+    if (!context.semanticContext || context.semanticContext.length === 0) {
+      return prompt;
+    }
+    this.logger.debug(
+      `Inject semantic context session=${context.sessionId} count=${context.semanticContext.length}`,
+    );
+
+    const semanticBlock = context.semanticContext
+      .map(
+        (item, index) =>
+          `[${index + 1}] 相似度=${item.similarity.toFixed(3)}${item.timestamp ? ` 时间=${item.timestamp}` : ''}\n${item.content}`,
+      )
+      .join('\n\n');
+
+    return [
+      '以下是与当前问题语义相关的历史上下文，请优先参考：',
+      semanticBlock,
+      '',
+      '当前用户问题：',
+      prompt,
+    ].join('\n');
+  }
+
+  private async buildEnhancedContext(prompt: string, context: AgentContext): Promise<AgentContext> {
+    if (!this.contextBuilder) {
+      return context;
+    }
+
+    try {
+      const built = await this.contextBuilder.buildContext(context.sessionId, prompt, context.userId);
+      return {
+        ...context,
+        ...built,
+        workspaceChange: context.workspaceChange ?? built.workspaceChange,
+      };
+    } catch {
+      this.logger.warn(`Context build failed session=${context.sessionId}, fallback to provided context`);
+      return context;
+    }
   }
 }

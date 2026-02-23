@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { AgentConfigService } from './agent-config.service';
 import { AgentService } from './agent.service';
 import { CliRunnerService } from './cli-runner.service';
+import { ContextBuilderService } from './context-builder.service';
 import { AgentConfigEntry, AgentsConfig } from '../interfaces';
 import * as fs from 'fs/promises';
 
@@ -17,6 +18,7 @@ const mockAgentService = {
 
 const mockHttpService = {};
 const mockCliRunner = {};
+const mockContextBuilder = { buildContext: jest.fn() };
 const mockConfigService = {
   get: jest.fn().mockReturnValue('mock'),
   getOrThrow: jest.fn().mockReturnValue('mock'),
@@ -61,6 +63,7 @@ describe('AgentConfigService', () => {
         { provide: AgentService, useValue: mockAgentService },
         { provide: HttpService, useValue: mockHttpService },
         { provide: CliRunnerService, useValue: mockCliRunner },
+        { provide: ContextBuilderService, useValue: mockContextBuilder },
         { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();

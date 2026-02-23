@@ -1,8 +1,9 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MessageEntity, SessionEntity } from '../database/entities';
 import { MemoryMessage, ShortTermMemoryService } from '../memory/services/short-term-memory.service';
+import { ChromaService } from '../vector/services/chroma.service';
 import { WorkspaceService } from '../workspace/workspace.service';
 
 export interface ChatMessage {
@@ -19,6 +20,7 @@ export interface ChatMessage {
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
   private readonly messages = new Map<string, ChatMessage[]>();
 
   constructor(
@@ -26,6 +28,7 @@ export class ChatService {
     @Optional() @InjectRepository(SessionEntity) private readonly sessionRepo?: Repository<SessionEntity>,
     @Optional() private readonly workspaceService?: WorkspaceService,
     @Optional() private readonly shortTermMemoryService?: ShortTermMemoryService,
+    @Optional() private readonly chromaService?: ChromaService,
   ) {}
 
   async saveMessage(input: Omit<ChatMessage, 'id' | 'createdAt'>): Promise<ChatMessage> {
@@ -67,6 +70,7 @@ export class ChatService {
         createdAt: saved.createdAt,
       };
       await this.tryAppendMemory(message);
+      await this.tryAddToVector(message);
       return message;
     }
 
@@ -81,6 +85,7 @@ export class ChatService {
     this.messages.set(input.sessionId, sessionMessages);
 
     await this.tryAppendMemory(message);
+    await this.tryAddToVector(message);
     return message;
   }
 
@@ -179,6 +184,28 @@ export class ChatService {
       );
     } catch {
       // ignore redis errors
+    }
+  }
+
+  private async tryAddToVector(message: ChatMessage): Promise<void> {
+    if (!this.chromaService) {
+      return;
+    }
+    try {
+      await this.chromaService.addDocument({
+        id: message.id,
+        content: message.content,
+        metadata: {
+          sessionId: message.sessionId,
+          role: message.role,
+          agentId: message.agentId ?? '',
+          userId: message.userId ?? '',
+          createdAt: message.createdAt.toISOString(),
+        },
+      });
+      this.logger.debug(`Vector indexed message=${message.id} session=${message.sessionId}`);
+    } catch {
+      this.logger.warn(`Vector index failed for message=${message.id}, continue without semantic index`);
     }
   }
 

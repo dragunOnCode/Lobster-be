@@ -8,6 +8,7 @@ describe('ClaudeAdapter', () => {
   let adapter: ClaudeAdapter;
   let httpService: { post: jest.Mock };
   let configService: { get: jest.Mock; getOrThrow: jest.Mock };
+  let contextBuilder: { buildContext: jest.Mock };
 
   beforeEach(() => {
     httpService = {
@@ -17,8 +18,15 @@ describe('ClaudeAdapter', () => {
       get: jest.fn(),
       getOrThrow: jest.fn(),
     };
+    contextBuilder = {
+      buildContext: jest.fn(),
+    };
 
-    adapter = new ClaudeAdapter(httpService as unknown as HttpService, configService as unknown as ConfigService);
+    adapter = new ClaudeAdapter(
+      httpService as unknown as HttpService,
+      configService as unknown as ConfigService,
+      contextBuilder as any,
+    );
   });
 
   it('当缺少 OPENROUTER_API_KEY 时应抛错并标记 ERROR', async () => {
@@ -122,5 +130,43 @@ describe('ClaudeAdapter', () => {
     }
 
     expect(deltas).toEqual(['Hel', 'lo']);
+  });
+
+  it('generate 应注入语义检索上下文到用户提示词', async () => {
+    configService.getOrThrow.mockImplementation((key: string) => {
+      const values: Record<string, string> = {
+        OPENROUTER_API_KEY: 'fake-key',
+        OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+        CLAUDE_TEMPERATURE: '0.7',
+        CLAUDE_MAX_TOKENS: '4000',
+        CLAUDE_TIMEOUT_MS: '60000',
+      };
+      return values[key];
+    });
+    contextBuilder.buildContext.mockResolvedValue({
+      sessionId: 's1',
+      semanticContext: [
+        {
+          id: 'v1',
+          content: '历史相关内容',
+          similarity: 0.9,
+          timestamp: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      summaries: ['摘要信息'],
+    });
+    httpService.post.mockReturnValue(
+      of({
+        data: {
+          choices: [{ message: { content: 'ok' } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      }),
+    );
+
+    await adapter.generate('当前问题', { sessionId: 's1' });
+    const payload = httpService.post.mock.calls[0][1] as any;
+    expect(payload.messages[1].content).toContain('语义相关的历史上下文');
+    expect(payload.messages[1].content).toContain('历史相关内容');
   });
 });
