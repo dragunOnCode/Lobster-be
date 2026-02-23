@@ -1,0 +1,27 @@
+import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bull';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduledTasksProcessor } from './processors/scheduled-tasks.processor';
+import { BackgroundTasksQueue } from './queues/background-tasks.queue';
+
+@Module({
+  imports: [
+    ConfigModule,
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        redis: {
+          host: configService.getOrThrow<string>('REDIS_HOST'),
+          port: Number(configService.getOrThrow<string>('REDIS_PORT')),
+          password: configService.get<string>('REDIS_PASSWORD') || undefined,
+          db: Number(configService.get<string>('REDIS_DB') ?? '0'),
+        },
+      }),
+    }),
+    BullModule.registerQueue({ name: 'background-tasks' }, { name: 'cron-tasks' }),
+  ],
+  providers: [ScheduledTasksProcessor, BackgroundTasksQueue],
+  exports: [BullModule, BackgroundTasksQueue],
+})
+export class TasksModule {}

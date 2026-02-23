@@ -9,6 +9,7 @@ import { WorkspaceModule } from './workspace/workspace.module';
 import { ChatModule } from './chat/chat.module';
 import { MemoryModule } from './memory/memory.module';
 import { LobsterConfigModule } from './config/config.module';
+import { TasksModule } from './tasks/tasks.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { LobsterConfigModule } from './config/config.module';
     ChatModule,
     MemoryModule,
     LobsterConfigModule,
+    TasksModule,
   ],
   controllers: [AppController],
   providers: [AppService],
