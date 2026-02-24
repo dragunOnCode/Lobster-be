@@ -5,6 +5,7 @@ import { AgentConfigService } from './agent-config.service';
 import { AgentService } from './agent.service';
 import { CliRunnerService } from './cli-runner.service';
 import { ContextBuilderService } from './context-builder.service';
+import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 import { AgentConfigEntry, AgentsConfig } from '../interfaces';
 import * as fs from 'fs/promises';
 
@@ -19,6 +20,10 @@ const mockAgentService = {
 const mockHttpService = {};
 const mockCliRunner = {};
 const mockContextBuilder = { buildContext: jest.fn() };
+const mockSharedMemoryService = {
+  getAgentThreadBinding: jest.fn(),
+  setAgentThreadBinding: jest.fn(),
+};
 const mockConfigService = {
   get: jest.fn().mockReturnValue('mock'),
   getOrThrow: jest.fn().mockReturnValue('mock'),
@@ -64,6 +69,7 @@ describe('AgentConfigService', () => {
         { provide: HttpService, useValue: mockHttpService },
         { provide: CliRunnerService, useValue: mockCliRunner },
         { provide: ContextBuilderService, useValue: mockContextBuilder },
+        { provide: SharedMemoryService, useValue: mockSharedMemoryService },
         { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();

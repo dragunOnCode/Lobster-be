@@ -20,6 +20,13 @@ export interface AgentDecisionSnapshot {
   [key: string]: unknown;
 }
 
+export interface AgentThreadBinding {
+  sessionId: string;
+  agentId: string;
+  threadId: string;
+  updatedAt: string;
+}
+
 @Injectable()
 export class SharedMemoryService {
   private readonly ttlSeconds: number;
@@ -67,11 +74,48 @@ export class SharedMemoryService {
     }
   }
 
+  async setAgentThreadBinding(sessionId: string, agentId: string, threadId: string): Promise<void> {
+    const key = this.getAgentThreadKey(sessionId, agentId);
+    const payload: AgentThreadBinding = {
+      sessionId,
+      agentId,
+      threadId,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.redis.set(key, JSON.stringify(payload), 'EX', this.ttlSeconds);
+  }
+
+  async getAgentThreadBinding(sessionId: string, agentId: string): Promise<AgentThreadBinding | null> {
+    const key = this.getAgentThreadKey(sessionId, agentId);
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<AgentThreadBinding>;
+      if (typeof parsed.threadId !== 'string' || parsed.threadId.length === 0) {
+        return null;
+      }
+      return {
+        sessionId,
+        agentId,
+        threadId: parsed.threadId,
+        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private getWorkspaceStateKey(sessionId: string): string {
     return `memory:shared:workspace:${sessionId}`;
   }
 
   private getDecisionKey(sessionId: string, agentId: string): string {
     return `memory:shared:decision:${sessionId}:${agentId}`;
+  }
+
+  private getAgentThreadKey(sessionId: string, agentId: string): string {
+    return `memory:shared:thread:${sessionId}:${agentId}`;
   }
 }

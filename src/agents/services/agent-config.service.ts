@@ -9,6 +9,7 @@ import { ContextBuilderService } from './context-builder.service';
 import { ClaudeAdapter } from '../adapters/claude.adapter';
 import { CodexAdapter } from '../adapters/codex.adapter';
 import { GeminiAdapter } from '../adapters/gemini.adapter';
+import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 import {
   AgentConfigEntry,
   AgentsConfig,
@@ -81,6 +82,7 @@ export class AgentConfigService implements OnModuleInit {
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
     private readonly contextBuilder: ContextBuilderService,
+    private readonly sharedMemoryService: SharedMemoryService,
   ) {
     this.configPath = path.resolve(process.cwd(), 'config', 'agents.config.json');
   }
@@ -127,9 +129,9 @@ export class AgentConfigService implements OnModuleInit {
       case 'claude':
         return new ClaudeAdapter(this.httpService, this.configService, this.contextBuilder);
       case 'codex':
-        return new CodexAdapter(this.cliRunner, this.configService);
+        return new CodexAdapter(this.cliRunner, this.configService, this.sharedMemoryService);
       case 'gemini':
-        return new GeminiAdapter(this.cliRunner, this.configService);
+        return new GeminiAdapter(this.cliRunner, this.configService, this.sharedMemoryService);
       default:
         throw new Error(`Unknown agent type: ${type}`);
     }

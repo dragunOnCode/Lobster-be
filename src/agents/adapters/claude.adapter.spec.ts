@@ -169,4 +169,45 @@ describe('ClaudeAdapter', () => {
     expect(payload.messages[1].content).toContain('语义相关的历史上下文');
     expect(payload.messages[1].content).toContain('历史相关内容');
   });
+
+  it('generate 在 token 预算不足时应截断历史消息', async () => {
+    configService.getOrThrow.mockImplementation((key: string) => {
+      const values: Record<string, string> = {
+        OPENROUTER_API_KEY: 'fake-key',
+        OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+        CLAUDE_TEMPERATURE: '0.7',
+        CLAUDE_MAX_TOKENS: '4000',
+        CLAUDE_TIMEOUT_MS: '60000',
+      };
+      return values[key];
+    });
+    configService.get.mockImplementation((key: string) => {
+      if (key === 'CLAUDE_CONTEXT_TOKEN_BUDGET') {
+        return '60';
+      }
+      return undefined;
+    });
+    contextBuilder.buildContext.mockResolvedValue({
+      sessionId: 's1',
+      conversationHistory: [
+        { id: 'h1', sessionId: 's1', role: 'user', content: '这是很长很长的历史消息，应该被截断'.repeat(10) },
+        { id: 'h2', sessionId: 's1', role: 'assistant', content: '这是历史回答，应该被截断'.repeat(10) },
+      ],
+    });
+    httpService.post.mockReturnValue(
+      of({
+        data: {
+          choices: [{ message: { content: 'ok' } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      }),
+    );
+
+    await adapter.generate('当前问题', { sessionId: 's1' });
+    const payload = httpService.post.mock.calls[0][1] as { messages: Array<{ role: string; content: string }> };
+    expect(payload.messages).toHaveLength(2);
+    expect(payload.messages[0].role).toBe('system');
+    expect(payload.messages[1].role).toBe('user');
+    expect(payload.messages[1].content).toContain('当前问题');
+  });
 });

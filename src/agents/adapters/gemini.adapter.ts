@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
+import { CliExitError, CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
 import { AgentContext, AgentResponse, AgentStatus, DecisionResult, ILLMAdapter, Message } from '../interfaces';
+import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 
 @Injectable()
 export class GeminiAdapter implements ILLMAdapter {
@@ -15,10 +16,12 @@ export class GeminiAdapter implements ILLMAdapter {
 
   private status: AgentStatus = AgentStatus.OFFLINE;
   private readonly keywords = ['设计', 'ui', 'ux', '界面', '视觉', '交互', '创意', '美化'];
+  private readonly geminiSessionsByWorkspaceSession = new Map<string, string>();
 
   constructor(
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
+    private readonly sharedMemoryService: SharedMemoryService,
   ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
@@ -27,22 +30,22 @@ export class GeminiAdapter implements ILLMAdapter {
     this.status = AgentStatus.BUSY;
 
     try {
-      const result = await this.cliRunner.run({
-        command: cliPath,
-        args: ['--model', 'gemini-pro', '--format', 'json'],
-        timeout: timeoutMs,
-        input: JSON.stringify({
-          prompt,
-          sessionId: context.sessionId,
-          userId: context.userId,
-        }),
-      });
+      const existingGeminiSessionId = await this.resolveExistingGeminiSessionId(context.sessionId);
+      const result = await this.runGemini(cliPath, prompt, timeoutMs, existingGeminiSessionId);
 
       const parsed = this.parseCliOutput(result.stdout);
+      const geminiSessionId = this.extractGeminiSessionId(parsed.metadata);
+      if (geminiSessionId) {
+        await this.persistGeminiSessionBinding(context.sessionId, geminiSessionId);
+      }
+
       this.status = AgentStatus.ONLINE;
       return {
         content: parsed.content,
-        metadata: parsed.metadata,
+        metadata: {
+          ...parsed.metadata,
+          geminiSessionId,
+        },
         timestamp: new Date(),
       };
     } catch (error) {
@@ -55,7 +58,7 @@ export class GeminiAdapter implements ILLMAdapter {
     throw new Error('Gemini CLI does not support streaming in Sprint 2');
   }
 
-  async shouldRespond(message: Message): Promise<DecisionResult> {
+  async shouldRespond(message: Message, _context: AgentContext): Promise<DecisionResult> {
     const text = message.content.toLowerCase();
     if (/@gemini\b/i.test(message.content)) {
       return { should: true, reason: 'direct mention @Gemini', priority: 'high' };
@@ -87,6 +90,83 @@ export class GeminiAdapter implements ILLMAdapter {
     return this.status;
   }
 
+  private async runGemini(
+    cliPath: string,
+    prompt: string,
+    timeoutMs: number,
+    existingGeminiSessionId?: string,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const baseArgs = ['-p', prompt, '--output-format', 'json'];
+
+    if (!existingGeminiSessionId) {
+      return this.cliRunner.run({
+        command: cliPath,
+        args: baseArgs,
+        timeout: timeoutMs,
+      });
+    }
+
+    try {
+      return await this.cliRunner.run({
+        command: cliPath,
+        args: ['-r', existingGeminiSessionId, ...baseArgs],
+        timeout: timeoutMs,
+      });
+    } catch (error) {
+      if (!this.shouldFallbackToFreshSession(error)) {
+        throw error;
+      }
+      return this.cliRunner.run({
+        command: cliPath,
+        args: baseArgs,
+        timeout: timeoutMs,
+      });
+    }
+  }
+
+  private async resolveExistingGeminiSessionId(workspaceSessionId: string): Promise<string | undefined> {
+    const localSessionId = this.geminiSessionsByWorkspaceSession.get(workspaceSessionId);
+    if (localSessionId) {
+      return localSessionId;
+    }
+
+    try {
+      const binding = await this.sharedMemoryService.getAgentThreadBinding(workspaceSessionId, this.id);
+      if (!binding?.threadId) {
+        return undefined;
+      }
+      this.geminiSessionsByWorkspaceSession.set(workspaceSessionId, binding.threadId);
+      return binding.threadId;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async persistGeminiSessionBinding(workspaceSessionId: string, geminiSessionId: string): Promise<void> {
+    this.geminiSessionsByWorkspaceSession.set(workspaceSessionId, geminiSessionId);
+    try {
+      await this.sharedMemoryService.setAgentThreadBinding(workspaceSessionId, this.id, geminiSessionId);
+    } catch {
+      // Redis 不可用时降级到进程内映射
+    }
+  }
+
+  private extractGeminiSessionId(metadata?: Record<string, unknown>): string | undefined {
+    if (!metadata) {
+      return undefined;
+    }
+    const value = metadata.session_id;
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  private shouldFallbackToFreshSession(error: unknown): boolean {
+    if (!(error instanceof CliExitError)) {
+      return false;
+    }
+    const stderr = error.stderr.toLowerCase();
+    return stderr.includes('not found') || stderr.includes('no session') || stderr.includes('invalid');
+  }
+
   private parseCliOutput(stdout: string): { content: string; metadata?: Record<string, unknown> } {
     const trimmed = stdout.trim();
     if (!trimmed) {
@@ -94,9 +174,15 @@ export class GeminiAdapter implements ILLMAdapter {
     }
 
     try {
-      const json = JSON.parse(trimmed) as { content?: string; message?: string; [key: string]: unknown };
+      const json = JSON.parse(trimmed) as { content?: string; message?: string; response?: string; [key: string]: unknown };
       const content =
-        typeof json.content === 'string' ? json.content : typeof json.message === 'string' ? json.message : trimmed;
+        typeof json.content === 'string'
+          ? json.content
+          : typeof json.message === 'string'
+            ? json.message
+            : typeof json.response === 'string'
+              ? json.response
+              : trimmed;
       return {
         content,
         metadata: json,

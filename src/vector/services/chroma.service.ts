@@ -79,20 +79,14 @@ export class ChromaService implements OnModuleInit {
   }
 
   async search(params: VectorSearchParams): Promise<VectorSearchResult[]> {
-    const {
-      query,
-      sessionId,
-      limit = 10,
-      minSimilarity = 0.7,
-      collection = 'messages',
-    } = params;
+    const { query, sessionId, limit = 10, minSimilarity = 0.7, collection = 'messages' } = params;
     const queryEmbedding = await this.embeddingService.embed(query);
     const target = this.getCollection(collection);
     const queryResult = await target.query({
       queryEmbeddings: [queryEmbedding],
       nResults: limit,
       where: sessionId ? ({ sessionId } as Record<string, string>) : undefined,
-      include: [IncludeEnum.Documents, IncludeEnum.Metadatas, IncludeEnum.Distances],
+      include: [IncludeEnum.documents, IncludeEnum.metadatas, IncludeEnum.distances],
     });
 
     const ids = queryResult.ids?.[0] ?? [];

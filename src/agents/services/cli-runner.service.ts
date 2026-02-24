@@ -43,21 +43,58 @@ export interface CliRunResult {
   exitCode: number;
 }
 
+interface RawExecError extends Error {
+  code?: string | number;
+  killed?: boolean;
+  stderr: string;
+  stdout: string;
+}
+
 @Injectable()
 export class CliRunnerService {
   async run(opts: CliRunOptions): Promise<CliRunResult> {
     const timeout = opts.timeout ?? 60000;
     const command = `${opts.command} ${opts.args.join(' ')}`.trim();
+    const execOptions: ExecFileOptions = {
+      cwd: opts.cwd,
+      timeout,
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    };
 
+    try {
+      return await this.executeRaw(opts.command, opts.args, execOptions, opts.input);
+    } catch (error) {
+      const rawError = error as RawExecError;
+      if (process.platform !== 'win32' || rawError.code !== 'ENOENT') {
+        throw this.toCliError(rawError, command, timeout, opts.command);
+      }
+
+      const resolved = await this.resolveWindowsCommand(opts.command);
+      if (!resolved) {
+        throw new CliNotFoundError(opts.command);
+      }
+
+      const isCmdScript = /\.(cmd|bat)$/i.test(resolved);
+      try {
+        if (isCmdScript) {
+          return await this.executeRaw('cmd.exe', ['/d', '/c', resolved, ...opts.args], execOptions, opts.input);
+        }
+        return await this.executeRaw(resolved, opts.args, execOptions, opts.input);
+      } catch (retryError) {
+        throw this.toCliError(retryError as RawExecError, command, timeout, opts.command);
+      }
+    }
+  }
+
+  private async executeRaw(
+    command: string,
+    args: string[],
+    execOptions: ExecFileOptions,
+    input?: string,
+  ): Promise<CliRunResult> {
     return new Promise<CliRunResult>((resolve, reject) => {
-      const execOptions: ExecFileOptions = {
-        cwd: opts.cwd,
-        timeout,
-        windowsHide: true,
-        maxBuffer: 10 * 1024 * 1024,
-      };
-
-      const child = execFile(opts.command, opts.args, execOptions, (error, stdout, stderr) => {
+      const child = execFile(command, args, execOptions, (error, stdout, stderr) => {
         const normalizedStdout = stdout?.toString() ?? '';
         const normalizedStderr = stderr?.toString() ?? '';
 
@@ -70,24 +107,61 @@ export class CliRunnerService {
           return;
         }
 
-        const err = error as NodeJS.ErrnoException & { code?: string | number; killed?: boolean };
-        if (err.code === 'ENOENT') {
-          reject(new CliNotFoundError(opts.command));
-          return;
-        }
-        if (err.killed) {
-          reject(new TimeoutError(command, timeout));
-          return;
-        }
-
-        const exitCode = typeof err.code === 'number' ? err.code : 1;
-        reject(new CliExitError(command, exitCode, normalizedStderr));
+        const rawError = error as RawExecError;
+        rawError.stdout = normalizedStdout;
+        rawError.stderr = normalizedStderr;
+        reject(rawError);
       });
 
-      if (opts.input && child.stdin) {
-        child.stdin.write(opts.input);
+      if (input && child.stdin) {
+        child.stdin.write(input);
         child.stdin.end();
       }
     });
   }
+
+  private toCliError(error: RawExecError, command: string, timeout: number, originalCommand: string): Error {
+    if (error.code === 'ENOENT' || this.isCommandNotFound(error.stderr, originalCommand)) {
+      return new CliNotFoundError(originalCommand);
+    }
+    if (error.killed) {
+      return new TimeoutError(command, timeout);
+    }
+    const exitCode = typeof error.code === 'number' ? error.code : 1;
+    return new CliExitError(command, exitCode, error.stderr ?? '');
+  }
+
+  private isCommandNotFound(stderr: string, command: string): boolean {
+    const lower = stderr.toLowerCase();
+    const commandLower = command.toLowerCase();
+    return (
+      lower.includes('is not recognized as an internal or external command') ||
+      lower.includes('not found') ||
+      lower.includes(`'${commandLower}'`)
+    );
+  }
+
+  private async resolveWindowsCommand(command: string): Promise<string | undefined> {
+    const lookup = await this.executeRaw('where.exe', [command], {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    }).catch(() => null);
+
+    if (!lookup) {
+      return undefined;
+    }
+
+    const candidates = lookup.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (candidates.length === 0) {
+      return undefined;
+    }
+
+    const cmdCandidate = candidates.find((item) => /\.(cmd|bat)$/i.test(item));
+    return cmdCandidate ?? candidates[0];
+  }
+
 }

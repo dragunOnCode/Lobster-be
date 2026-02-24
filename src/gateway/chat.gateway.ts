@@ -53,6 +53,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const userId = this.getQueryValue(client, 'userId');
 
     if (!sessionId || !userId) {
+      // this.logger.error(`client connected: ${client.id}, sessionId or userId is required`);
       client.emit('connection:error', { message: 'sessionId 和 userId 为必填项' });
       client.disconnect();
       return;
@@ -117,6 +118,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: SendMessagePayload,
   ): Promise<{ ok: boolean }> {
+    this.logger.log(`payload: ${JSON.stringify(payload)}`);
     if (!payload?.content?.trim() || !payload?.sessionId?.trim()) {
       client.emit('message:error', { message: 'content 和 sessionId 不能为空' });
       return { ok: false };
@@ -275,6 +277,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       content: response.content,
     });
 
+    const memberCount = this.sessionManager.getSessionMemberCount(sessionId);
     this.sessionManager.broadcastToSession(sessionId, 'message:received', assistantMessage);
     this.sessionManager.broadcastToSession(sessionId, 'agent:response', {
       agentId: agent.id,
@@ -283,6 +286,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       sessionId,
       timestamp: new Date().toISOString(),
     });
+    this.logger.log(
+      `assistant broadcasted, session=${sessionId}, agent=${agent.id}, message=${assistantMessage.id}, members=${memberCount}`,
+    );
   }
 
   private async handleStreamingAgentResponse(
@@ -345,6 +351,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       content: fullContent,
     });
 
+    const memberCount = this.sessionManager.getSessionMemberCount(sessionId);
     this.sessionManager.broadcastToSession(sessionId, 'message:received', assistantMessage);
     this.sessionManager.broadcastToSession(sessionId, 'agent:response', {
       agentId: agent.id,
@@ -353,5 +360,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       sessionId,
       timestamp: new Date().toISOString(),
     });
+    this.logger.log(
+      `stream assistant broadcasted, session=${sessionId}, agent=${agent.id}, message=${assistantMessage.id}, members=${memberCount}`,
+    );
   }
 }

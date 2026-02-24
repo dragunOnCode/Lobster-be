@@ -1,11 +1,13 @@
 import { ConfigService } from '@nestjs/config';
 import { CodexAdapter } from './codex.adapter';
 import { CliRunnerService } from '../services/cli-runner.service';
+import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 
 describe('CodexAdapter', () => {
   let adapter: CodexAdapter;
   let cliRunner: { run: jest.Mock };
   let configService: { getOrThrow: jest.Mock };
+  let sharedMemoryService: { getAgentThreadBinding: jest.Mock; setAgentThreadBinding: jest.Mock };
 
   beforeEach(() => {
     cliRunner = { run: jest.fn() };
@@ -18,8 +20,16 @@ describe('CodexAdapter', () => {
         return values[key];
       }),
     };
+    sharedMemoryService = {
+      getAgentThreadBinding: jest.fn().mockResolvedValue(null),
+      setAgentThreadBinding: jest.fn().mockResolvedValue(undefined),
+    };
 
-    adapter = new CodexAdapter(cliRunner as unknown as CliRunnerService, configService as unknown as ConfigService);
+    adapter = new CodexAdapter(
+      cliRunner as unknown as CliRunnerService,
+      configService as unknown as ConfigService,
+      sharedMemoryService as unknown as SharedMemoryService,
+    );
   });
 
   it('generate 应解析 CLI 输出', async () => {

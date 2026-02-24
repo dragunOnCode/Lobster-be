@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
+import { CliExitError, CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
 import { AgentContext, AgentResponse, AgentStatus, DecisionResult, ILLMAdapter, Message } from '../interfaces';
+import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 
 @Injectable()
 export class CodexAdapter implements ILLMAdapter {
@@ -15,10 +16,13 @@ export class CodexAdapter implements ILLMAdapter {
 
   private status: AgentStatus = AgentStatus.OFFLINE;
   private readonly keywords = ['审查', '检查', '测试', 'bug', '问题', '安全'];
+  private readonly codexThreadsBySession = new Map<string, string>();
+  private readonly logger = new Logger(CodexAdapter.name);
 
   constructor(
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
+    private readonly sharedMemoryService: SharedMemoryService,
   ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
@@ -27,22 +31,23 @@ export class CodexAdapter implements ILLMAdapter {
     this.status = AgentStatus.BUSY;
 
     try {
-      const result = await this.cliRunner.run({
-        command: cliPath,
-        args: ['--format', 'json', '--timeout', String(Math.ceil(timeoutMs / 1000))],
-        timeout: timeoutMs,
-        input: JSON.stringify({
-          prompt,
-          sessionId: context.sessionId,
-          userId: context.userId,
-        }),
-      });
+      this.logger.log(`generate: ${prompt}, context: ${JSON.stringify(context)}`);
+      const existingThreadId = await this.resolveExistingThreadId(context.sessionId);
+      const result = await this.runCodex(cliPath, prompt, timeoutMs, existingThreadId);
 
       const parsed = this.parseCliOutput(result.stdout);
+      const threadId = this.extractThreadIdFromMetadata(parsed.metadata);
+      if (threadId) {
+        await this.persistThreadBinding(context.sessionId, threadId);
+      }
+
       this.status = AgentStatus.ONLINE;
       return {
         content: parsed.content,
-        metadata: parsed.metadata,
+        metadata: {
+          ...parsed.metadata,
+          codexThreadId: threadId,
+        },
         timestamp: new Date(),
       };
     } catch (error) {
@@ -96,6 +101,38 @@ export class CodexAdapter implements ILLMAdapter {
       return { content: '' };
     }
 
+    const lines = trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const jsonLines = lines
+      .map((line) => {
+        try {
+          return JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((item): item is Record<string, unknown> => item !== null);
+
+    if (jsonLines.length > 0) {
+      if (jsonLines.length === 1 && !this.pickString(jsonLines[0], 'type')) {
+        const single = jsonLines[0];
+        const content =
+          this.pickString(single, 'content') ?? this.pickString(single, 'message') ?? JSON.stringify(single);
+        return {
+          content,
+          metadata: single,
+        };
+      }
+      const content = this.extractContentFromEvents(jsonLines) ?? trimmed;
+      return {
+        content,
+        metadata: { events: jsonLines },
+      };
+    }
+
     try {
       const json = JSON.parse(trimmed) as { content?: string; message?: string; [key: string]: unknown };
       const content =
@@ -107,5 +144,181 @@ export class CodexAdapter implements ILLMAdapter {
     } catch {
       return { content: trimmed };
     }
+  }
+
+  private async runCodex(
+    cliPath: string,
+    prompt: string,
+    timeoutMs: number,
+    existingThreadId?: string,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    if (!existingThreadId) {
+      this.logger.log(
+        `runCodex: ${cliPath}, 
+        args: ${['exec', '--json', '-']}, 
+        timeout: ${timeoutMs}, 
+        input: ${prompt}`,
+      );
+      return this.cliRunner.run({
+        command: cliPath,
+        args: ['exec', '--json', '-'],
+        timeout: timeoutMs,
+        input: prompt,
+      });
+    }
+
+    try {
+      this.logger.log(
+        `runCodex: ${cliPath}, args: ${['exec', 'resume', '--json', existingThreadId, '-']}, timeout: ${timeoutMs}, input: ${prompt}`,
+      );
+      return await this.cliRunner.run({
+        command: cliPath,
+        args: ['exec', 'resume', '--json', existingThreadId, '-'],
+        timeout: timeoutMs,
+        input: prompt,
+      });
+    } catch (error) {
+      if (!this.shouldFallbackToFreshExec(error)) {
+        throw error;
+      }
+
+      return this.cliRunner.run({
+        command: cliPath,
+        args: ['exec', '--json', '-'],
+        timeout: timeoutMs,
+        input: prompt,
+      });
+    }
+  }
+
+  private async resolveExistingThreadId(sessionId: string): Promise<string | undefined> {
+    const localThreadId = this.codexThreadsBySession.get(sessionId);
+    if (localThreadId) {
+      return localThreadId;
+    }
+
+    try {
+      const binding = await this.sharedMemoryService.getAgentThreadBinding(sessionId, this.id);
+      if (!binding?.threadId) {
+        return undefined;
+      }
+      this.codexThreadsBySession.set(sessionId, binding.threadId);
+      return binding.threadId;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async persistThreadBinding(sessionId: string, threadId: string): Promise<void> {
+    this.codexThreadsBySession.set(sessionId, threadId);
+    try {
+      await this.sharedMemoryService.setAgentThreadBinding(sessionId, this.id, threadId);
+    } catch {
+      // Redis 不可用时降级到进程内映射
+    }
+  }
+
+  private extractThreadIdFromMetadata(metadata?: Record<string, unknown>): string | undefined {
+    if (!metadata) {
+      return undefined;
+    }
+
+    const direct = this.pickString(metadata, 'thread_id');
+    if (direct) {
+      return direct;
+    }
+
+    const events = metadata.events;
+    if (!Array.isArray(events)) {
+      return undefined;
+    }
+
+    for (const event of events) {
+      if (!event || typeof event !== 'object') {
+        continue;
+      }
+      const eventRecord = event as Record<string, unknown>;
+      if (this.pickString(eventRecord, 'type') !== 'thread.started') {
+        continue;
+      }
+      const threadId = this.pickString(eventRecord, 'thread_id');
+      if (threadId) {
+        return threadId;
+      }
+    }
+    return undefined;
+  }
+
+  private shouldFallbackToFreshExec(error: unknown): boolean {
+    if (!(error instanceof CliExitError)) {
+      return false;
+    }
+    const stderr = error.stderr.toLowerCase();
+    return stderr.includes('not found') || stderr.includes('no session') || stderr.includes('unknown');
+  }
+
+  private extractContentFromEvents(events: Record<string, unknown>[]): string | undefined {
+    const textCandidates = events
+      .flatMap((event) => [this.pickString(event, 'final_response'), this.pickString(event, 'output_text')])
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+    if (textCandidates.length > 0) {
+      return textCandidates[textCandidates.length - 1].trim();
+    }
+
+    const messageCandidates = events
+      .map((event) => this.pickAssistantMessage(event))
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+    if (messageCandidates.length > 0) {
+      return messageCandidates[messageCandidates.length - 1].trim();
+    }
+
+    const itemCandidates = events
+      .map((event) => this.pickAssistantItemText(event))
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+    if (itemCandidates.length > 0) {
+      return itemCandidates[itemCandidates.length - 1].trim();
+    }
+
+    return undefined;
+  }
+
+  private pickAssistantMessage(event: Record<string, unknown>): string | undefined {
+    const message = event.message;
+    if (!message || typeof message !== 'object') {
+      return undefined;
+    }
+
+    const role = this.pickString(message as Record<string, unknown>, 'role');
+    if (role !== 'assistant') {
+      return undefined;
+    }
+
+    return (
+      this.pickString(message as Record<string, unknown>, 'content') ??
+      this.pickString(message as Record<string, unknown>, 'text')
+    );
+  }
+
+  private pickString(obj: Record<string, unknown>, key: string): string | undefined {
+    const value = obj[key];
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private pickAssistantItemText(event: Record<string, unknown>): string | undefined {
+    if (this.pickString(event, 'type') !== 'item.completed') {
+      return undefined;
+    }
+    const item = event.item;
+    if (!item || typeof item !== 'object') {
+      return undefined;
+    }
+    const itemObj = item as Record<string, unknown>;
+    if (this.pickString(itemObj, 'type') !== 'agent_message') {
+      return undefined;
+    }
+    return this.pickString(itemObj, 'text');
   }
 }
