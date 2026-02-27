@@ -1,0 +1,29 @@
+{
+  "name": "lobster-frontend-debug",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext ts,vue --max-warnings 0"
+  },
+  "dependencies": {
+    "@arco-design/web-vue": "^2.57.0",
+    "@tanstack/vue-query": "^5.90.5",
+    "pinia": "^2.3.1",
+    "socket.io-client": "^4.8.3",
+    "vue": "^3.5.18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.43.0",
+    "@typescript-eslint/parser": "^8.43.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.2",
+    "vite": "^5.4.20",
+    "vue-tsc": "^2.1.10"
+  }
+}
