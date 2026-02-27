@@ -127,7 +127,7 @@ export class AgentConfigService implements OnModuleInit {
   private createBaseAdapter(type: string): ILLMAdapter {
     switch (type) {
       case 'claude':
-        return new ClaudeAdapter(this.httpService, this.configService, this.contextBuilder);
+        return new ClaudeAdapter(this.cliRunner, this.configService, this.sharedMemoryService, this.contextBuilder);
       case 'codex':
         return new CodexAdapter(this.cliRunner, this.configService, this.sharedMemoryService);
       case 'gemini':

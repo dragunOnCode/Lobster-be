@@ -10,11 +10,11 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: lobster
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin"]
+      test: ['CMD-SHELL', 'pg_isready -U admin']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,11 +24,11 @@ services:
     container_name: lobster-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - '6379:6379'
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
       timeout: 3s
       retries: 5
@@ -38,7 +38,7 @@ services:
     container_name: lobster-chromadb
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - '8000:8000'
     volumes:
       - chroma_data:/chroma/chroma
     environment:
@@ -50,8 +50,8 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - '9000:9000'
+      - '9001:9001'
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -63,11 +63,22 @@ services:
     container_name: lobster-ollama
     restart: unless-stopped
     ports:
-      - "11434:11434"
+      - '11434:11434'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    environment:
+      HTTP_PROXY: http://host.docker.internal:7890
+      HTTPS_PROXY: http://host.docker.internal:7890
+      NO_PROXY: localhost,127.0.0.1,ollama,host.docker.internal
+      http_proxy: http://host.docker.internal:7890
+      https_proxy: http://host.docker.internal:7890
+      no_proxy: localhost,127.0.0.1,ollama,host.docker.internal
+      ALL_PROXY: http://host.docker.internal:7890
+      all_proxy: http://host.docker.internal:7890
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD", "ollama", "list"]
+      test: ['CMD', 'ollama', '--version']
       interval: 10s
       timeout: 5s
       retries: 20
@@ -75,13 +86,26 @@ services:
   ollama-init:
     image: ollama/ollama:latest
     container_name: lobster-ollama-init
-    restart: "no"
+    restart: 'no'
     depends_on:
       ollama:
-        condition: service_healthy
+        condition: service_started
     environment:
       OLLAMA_HOST: http://ollama:11434
-    command: ["/bin/sh", "-c", "ollama pull nomic-embed-text && ollama list"]
+      HTTP_PROXY: http://host.docker.internal:7890
+      HTTPS_PROXY: http://host.docker.internal:7890
+      NO_PROXY: localhost,127.0.0.1,ollama,host.docker.internal
+      http_proxy: http://host.docker.internal:7890
+      https_proxy: http://host.docker.internal:7890
+      no_proxy: localhost,127.0.0.1,ollama,host.docker.internal
+      ALL_PROXY: http://host.docker.internal:7890
+      all_proxy: http://host.docker.internal:7890
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    entrypoint: ['/bin/sh']
+    command:
+      - '-c'
+      - 'for i in 1 2 3 4 5; do ollama pull nomic-embed-text && exit 0; echo "pull failed, retry in 10s..."; sleep 10; done; exit 1'
 
 volumes:
   postgres_data:

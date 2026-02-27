@@ -40,3 +40,6 @@
 {"type":"message_saved","role":"user","userId":"u-apifox-1","contentPreview":"你是谁","timestamp":"2026-02-24T15:26:34.294Z"}
 {"type":"message_saved","role":"user","userId":"u-apifox-1","contentPreview":"你是谁","timestamp":"2026-02-24T15:50:37.634Z"}
 {"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"# 自我介绍\n\n我是 **Claude**，由 Anthropic 开发的 AI 助手。\n\n在当前会话中，我扮演的角色是：\n\n## 🏗️ 专业软件架构师 & 全栈开发工程师\n\n### 核心能力\n\n| 领域 | 具体技能 |\n|------|---------|\n| **系统架构设计** | 微服务、分布式系统、高可用架构、DDD领域驱动设计 |\n| **后端开发** | Java/Spring ","timestamp":"2026-02-24T15:50:46.952Z"}
+{"type":"message_saved","role":"user","userId":"u-apifox-1","contentPreview":"你是谁","timestamp":"2026-02-26T16:05:19.409Z"}
+{"type":"message_saved","role":"user","userId":"u-apifox-1","contentPreview":"@Gemini 你是谁","timestamp":"2026-02-26T16:06:03.755Z"}
+{"type":"message_saved","role":"assistant","agentId":"gemini-001","contentPreview":"我是 Gemini CLI，一个专注于软件工程任务的自主 CLI 智能体。\n\n在当前项目 **Lobster-be** 的语境下，我通常作为底层能力的提供者。你提供的 `GeminiAdapter` 测试文件（`gemini.adapter.spec.ts`）展示了系统如何通过 `CliRunnerService` 调用我，利用我的分析和生成能力来处理 UI 设计优化、创意建议等任务，并支持多轮会","timestamp":"2026-02-26T16:06:48.552Z"}

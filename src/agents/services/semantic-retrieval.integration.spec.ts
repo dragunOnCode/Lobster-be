@@ -1,9 +1,9 @@
-import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { of } from 'rxjs';
 import { ClaudeAdapter } from '../adapters/claude.adapter';
 import { ContextBuilderService } from './context-builder.service';
 import { ChatService } from '../../chat/chat.service';
+import { CliRunnerService } from './cli-runner.service';
+import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 
 type StoredVector = {
   id: string;
@@ -130,23 +130,17 @@ describe('Semantic Retrieval Integration', () => {
       userId: 'u1',
     });
 
-    const httpService = {
-      post: jest.fn().mockReturnValue(
-        of({
-          data: {
-            choices: [{ message: { content: 'ok' } }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          },
-        }),
-      ),
+    const cliRunner = {
+      run: jest.fn().mockResolvedValue({
+        stdout: JSON.stringify({ content: 'ok' }),
+        stderr: '',
+        exitCode: 0,
+      }),
     };
     const configService = {
       getOrThrow: jest.fn().mockImplementation((key: string) => {
         const values: Record<string, string> = {
-          OPENROUTER_API_KEY: 'fake-key',
-          OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
-          CLAUDE_TEMPERATURE: '0.7',
-          CLAUDE_MAX_TOKENS: '4000',
+          CLAUDE_CLI_PATH: 'claude',
           CLAUDE_TIMEOUT_MS: '60000',
         };
         return values[key];
@@ -155,17 +149,21 @@ describe('Semantic Retrieval Integration', () => {
     };
 
     const adapter = new ClaudeAdapter(
-      httpService as unknown as HttpService,
+      cliRunner as unknown as CliRunnerService,
       configService as unknown as ConfigService,
+      {
+        getAgentThreadBinding: jest.fn().mockResolvedValue(null),
+        setAgentThreadBinding: jest.fn().mockResolvedValue(undefined),
+      } as unknown as SharedMemoryService,
       contextBuilder,
     );
 
     await adapter.generate('我们使用什么关系型数据库？', { sessionId: 'session-semantic' });
 
-    const payload = httpService.post.mock.calls[0][1] as any;
-    const userPrompt = payload.messages[1].content as string;
-    expect(userPrompt).toContain('语义相关的历史上下文');
-    expect(userPrompt).toContain('PostgreSQL');
-    expect(userPrompt).toContain('我们使用什么关系型数据库');
+    const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
+    const cliPrompt = call.args[3];
+    expect(cliPrompt).toContain('语义相关的历史上下文');
+    expect(cliPrompt).toContain('PostgreSQL');
+    expect(cliPrompt).toContain('我们使用什么关系型数据库');
   });
 });
