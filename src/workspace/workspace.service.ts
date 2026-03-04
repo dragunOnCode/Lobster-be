@@ -55,6 +55,17 @@ export class WorkspaceService implements OnModuleInit {
     }
   }
 
+  async listSessions(): Promise<string[]> {
+    try {
+      const entries = await fs.readdir(this.workspaceRoot, { withFileTypes: true });
+      return entries
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('_') && entry.name !== '.gitkeep')
+        .map((entry) => entry.name);
+    } catch (error) {
+      return [];
+    }
+  }
+
   async saveCodeFile(sessionId: string, filePath: string, content: string, author: string): Promise<void> {
     const fullPath = path.join(this.getSessionRoot(sessionId), 'code', filePath);
 
@@ -86,6 +97,21 @@ export class WorkspaceService implements OnModuleInit {
       .split('\n')
       .filter((line) => line.trim().length > 0)
       .map((line) => JSON.parse(line) as TranscriptEvent);
+  }
+
+  async replaceTranscript(sessionId: string, events: TranscriptEvent[]): Promise<void> {
+    await this.initializeSession(sessionId);
+    const transcriptPath = path.join(this.getSessionRoot(sessionId), 'transcripts.jsonl');
+    const content = events
+      .map((event) =>
+        JSON.stringify({
+          ...event,
+          timestamp: event.timestamp ?? new Date().toISOString(),
+        }),
+      )
+      .join('\n');
+
+    await fs.writeFile(transcriptPath, content.length > 0 ? `${content}\n` : '', 'utf-8');
   }
 
   private detectLanguage(filePath: string): string {

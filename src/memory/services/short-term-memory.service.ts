@@ -52,6 +52,10 @@ export class ShortTermMemoryService {
     return next;
   }
 
+  async clear(sessionId: string): Promise<void> {
+    await this.redis.del(this.getKey(sessionId));
+  }
+
   private getKey(sessionId: string): string {
     return `memory:short:${sessionId}`;
   }

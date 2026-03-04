@@ -1,0 +1,17 @@
+{"type":"session_created","sessionId":"demo-session-1","timestamp":"2026-02-28T16:29:14.823Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude Vue和React哪个更适合初学者？","timestamp":"2026-02-28T16:29:14.824Z"}
+{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"我没有看到您之前提出的问题。这是我们对话的开始。请告诉我您需要什么帮助？","timestamp":"2026-02-28T16:29:30.283Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude Java和NodeJS哪个更适合后端","timestamp":"2026-02-28T17:33:40.915Z"}
+{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"好的，我会直接回答问题，简洁输出。请问有什么任务需要处理？","timestamp":"2026-02-28T17:33:59.300Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude Java和NodeJS哪个更适合后端","timestamp":"2026-02-28T18:11:01.292Z"}
+{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"取决于场景：\n\n**Java 更适合：**\n- 大型企业应用、高并发系统\n- 需要强类型和严格架构的项目\n- 微服务架构（Spring Boot/Cloud 生态成熟）\n- 性能敏感、计算密集型任务\n- 团队有 OOP 背景\n\n**Node.js 更适合：**\n- 快速原型和初创项目\n- 实时应用（聊天、协作工具）\n- API 网关、BFF 层\n- 前端全栈团队（JavaScript/TypeSc","timestamp":"2026-02-28T18:11:25.471Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude 如果我倾向大模型应用开发，又该怎么选呢","timestamp":"2026-02-28T18:12:47.576Z"}
+{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"**Node.js/TypeScript 更适合大模型应用开发**，原因：\n\n**生态优势：**\n- LangChain.js、LlamaIndex.js 等主流框架\n- Vercel AI SDK（流式响应处理极佳）\n- OpenAI、Anthropic 官方 SDK 首发/更新最快\n- 向量数据库客户端（Pinecone、Chroma、Weaviate）支持完善\n\n**技术特性匹配：**\n- ","timestamp":"2026-02-28T18:13:08.610Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude Vue好用的UI库有哪些","timestamp":"2026-02-28T18:27:20.718Z"}
+{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"请继续，我在等待你的问题。","timestamp":"2026-02-28T18:27:35.993Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude Java和NodeJS哪个更适合后端开发","timestamp":"2026-03-01T03:06:15.937Z"}
+{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"I see you've sent \"[QUESTION]\" - it looks like you might be preparing to ask something. How can I help you today? Feel free to ask about:\n\n- Code in your Lobster-be project\n- Debugging issues\n- Adding","timestamp":"2026-03-01T03:06:34.621Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude Java和NodeJS哪个更适合后端开发","timestamp":"2026-03-01T03:09:59.240Z"}
+{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"这是一个经典的技术选型问题，两者各有优势，选择取决于具体场景：\n\n## Java 优势\n\n| 方面 | 说明 |\n|------|------|\n| **企业级应用** | 成熟的生态系统，适合大型复杂系统 |\n| **类型安全** | 静态类型，编译期检查，重构友好 |\n| **性能** | JVM 优化成熟，多线程处理能力强 |\n| **稳定性** | 长期支持版本，向后兼容性好 |\n| **","timestamp":"2026-03-01T03:10:20.262Z"}
+{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Codex 你怎么看？","timestamp":"2026-03-01T03:11:13.208Z"}
+{"type":"message_saved","role":"assistant","agentId":"codex-001","contentPreview":"你是指对哪件事的看法？请补充一点背景或具体问题。","timestamp":"2026-03-01T03:11:22.007Z"}

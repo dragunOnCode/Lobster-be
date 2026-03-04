@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CliExitError, CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
+import { CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
 import { AgentContext, AgentResponse, AgentStatus, DecisionResult, ILLMAdapter, Message } from '../interfaces';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
+import { PromptContextBuilderService } from '../services/prompt-context-builder.service';
 
 @Injectable()
 export class GeminiAdapter implements ILLMAdapter {
@@ -16,36 +16,46 @@ export class GeminiAdapter implements ILLMAdapter {
 
   private status: AgentStatus = AgentStatus.OFFLINE;
   private readonly keywords = ['设计', 'ui', 'ux', '界面', '视觉', '交互', '创意', '美化'];
-  private readonly geminiSessionsByWorkspaceSession = new Map<string, string>();
+  private readonly logger = new Logger(GeminiAdapter.name);
 
   constructor(
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
-    private readonly sharedMemoryService: SharedMemoryService,
+    private readonly promptContextBuilder?: PromptContextBuilderService,
   ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
     const cliPath = this.configService.getOrThrow<string>('GEMINI_CLI_PATH');
     const timeoutMs = Number(this.configService.getOrThrow<string>('GEMINI_TIMEOUT_MS'));
+    const historyLimit = Number(this.configService.get<string>('GEMINI_CONTEXT_HISTORY_LIMIT') ?? '12');
+    const semanticLimit = Number(this.configService.get<string>('GEMINI_CONTEXT_SEMANTIC_LIMIT') ?? '3');
+    const summaryLimit = Number(this.configService.get<string>('GEMINI_CONTEXT_SUMMARY_LIMIT') ?? '2');
+    const tokenBudget = Number(this.configService.get<string>('GEMINI_CONTEXT_TOKEN_BUDGET') ?? '12000');
+    const lineMaxChars = Number(this.configService.get<string>('GEMINI_CONTEXT_LINE_MAX_CHARS') ?? '320');
     this.status = AgentStatus.BUSY;
 
     try {
-      const existingGeminiSessionId = await this.resolveExistingGeminiSessionId(context.sessionId);
-      const result = await this.runGemini(cliPath, prompt, timeoutMs, existingGeminiSessionId);
+      const enhancedContext = context;
+      const userPrompt = this.promptContextBuilder?.buildUserPrompt(prompt) ?? this.buildUserPrompt(prompt);
+      const promptBuilt = this.promptContextBuilder?.buildCliPromptWithMetrics(userPrompt, enhancedContext, {
+        historyLimit,
+        semanticLimit,
+        summaryLimit,
+        tokenBudget,
+        lineMaxChars,
+      });
+      const cliPrompt = promptBuilt?.prompt ?? this.buildCliPrompt(userPrompt, this.buildContextReferenceBlock(enhancedContext, userPrompt));
+      this.logger.log(
+        `generate session=${enhancedContext.sessionId} contextChars=${promptBuilt?.metrics.contextChars ?? cliPrompt.length} contextEstimatedTokens=${promptBuilt?.metrics.contextEstimatedTokens ?? Math.ceil(cliPrompt.length / 4)} historyItems=${promptBuilt?.metrics.historyItems ?? 'n/a'} semanticItems=${promptBuilt?.metrics.semanticItems ?? 'n/a'} summaryItems=${promptBuilt?.metrics.summaryItems ?? 'n/a'} trimmedItems=${promptBuilt?.metrics.trimmedItems ?? 'n/a'}`,
+      );
+      const result = await this.runGemini(cliPath, cliPrompt, timeoutMs);
 
       const parsed = this.parseCliOutput(result.stdout);
-      const geminiSessionId = this.extractGeminiSessionId(parsed.metadata);
-      if (geminiSessionId) {
-        await this.persistGeminiSessionBinding(context.sessionId, geminiSessionId);
-      }
 
       this.status = AgentStatus.ONLINE;
       return {
         content: parsed.content,
-        metadata: {
-          ...parsed.metadata,
-          geminiSessionId,
-        },
+        metadata: parsed.metadata,
         timestamp: new Date(),
       };
     } catch (error) {
@@ -94,77 +104,73 @@ export class GeminiAdapter implements ILLMAdapter {
     cliPath: string,
     prompt: string,
     timeoutMs: number,
-    existingGeminiSessionId?: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const baseArgs = ['-p', prompt, '--output-format', 'json'];
+    return this.cliRunner.run({
+      command: cliPath,
+      args: ['-p', prompt, '--output-format', 'json'],
+      timeout: timeoutMs,
+    });
+  }
 
-    if (!existingGeminiSessionId) {
-      return this.cliRunner.run({
-        command: cliPath,
-        args: baseArgs,
-        timeout: timeoutMs,
+  private buildUserPrompt(prompt: string): string {
+    const trimmed = prompt.trim();
+    const withoutMention = trimmed.replace(/^@\S+\s*/u, '').trim();
+    return withoutMention.length > 0 ? withoutMention : trimmed;
+  }
+
+  private buildCliPrompt(userPrompt: string, contextReference: string): string {
+    return [
+      `CURRENT_QUESTION: ${userPrompt}`,
+      '',
+      'CONTEXT_REFERENCE:',
+      contextReference,
+      '',
+      '回答要求：优先直接回答 CURRENT_QUESTION；CONTEXT_REFERENCE 仅作参考。',
+    ]
+      .filter((part) => part.length > 0)
+      .join('\n');
+  }
+
+  private buildContextReferenceBlock(context: AgentContext, currentUserPrompt: string): string {
+    const sections: string[] = [];
+    const normalizedCurrent = this.normalizeForDedup(currentUserPrompt);
+
+    const historyLines = (context.conversationHistory ?? [])
+      .filter((item) => item.content?.trim())
+      .filter((item) => this.normalizeForDedup(item.content) !== normalizedCurrent)
+      .slice(-6)
+      .map((item) => {
+        const role = item.role === 'assistant' && item.agentId ? `ASSISTANT(${item.agentId})` : item.role.toUpperCase();
+        return `${role}: ${this.truncate(item.content.replace(/\s+/g, ' ').trim(), 220)}`;
       });
+    if (historyLines.length > 0) {
+      sections.push('近期对话:\n' + historyLines.join('\n'));
     }
 
-    try {
-      return await this.cliRunner.run({
-        command: cliPath,
-        args: ['-r', existingGeminiSessionId, ...baseArgs],
-        timeout: timeoutMs,
-      });
-    } catch (error) {
-      if (!this.shouldFallbackToFreshSession(error)) {
-        throw error;
-      }
-      return this.cliRunner.run({
-        command: cliPath,
-        args: baseArgs,
-        timeout: timeoutMs,
-      });
+    const semanticLines = (context.semanticContext ?? [])
+      .slice(0, 3)
+      .map((item, index) => `[${index + 1}] 相似度=${item.similarity.toFixed(3)} ${this.truncate(item.content, 220)}`);
+    if (semanticLines.length > 0) {
+      sections.push('语义相关历史:\n' + semanticLines.join('\n'));
     }
+
+    const summaries = (context.summaries ?? []).slice(0, 2).map((item, index) => `${index + 1}. ${this.truncate(item, 220)}`);
+    if (summaries.length > 0) {
+      sections.push('历史摘要:\n' + summaries.join('\n'));
+    }
+
+    return sections.join('\n\n');
   }
 
-  private async resolveExistingGeminiSessionId(workspaceSessionId: string): Promise<string | undefined> {
-    const localSessionId = this.geminiSessionsByWorkspaceSession.get(workspaceSessionId);
-    if (localSessionId) {
-      return localSessionId;
+  private truncate(text: string, maxLen: number): string {
+    if (text.length <= maxLen) {
+      return text;
     }
-
-    try {
-      const binding = await this.sharedMemoryService.getAgentThreadBinding(workspaceSessionId, this.id);
-      if (!binding?.threadId) {
-        return undefined;
-      }
-      this.geminiSessionsByWorkspaceSession.set(workspaceSessionId, binding.threadId);
-      return binding.threadId;
-    } catch {
-      return undefined;
-    }
+    return `${text.slice(0, maxLen)}...`;
   }
 
-  private async persistGeminiSessionBinding(workspaceSessionId: string, geminiSessionId: string): Promise<void> {
-    this.geminiSessionsByWorkspaceSession.set(workspaceSessionId, geminiSessionId);
-    try {
-      await this.sharedMemoryService.setAgentThreadBinding(workspaceSessionId, this.id, geminiSessionId);
-    } catch {
-      // Redis 不可用时降级到进程内映射
-    }
-  }
-
-  private extractGeminiSessionId(metadata?: Record<string, unknown>): string | undefined {
-    if (!metadata) {
-      return undefined;
-    }
-    const value = metadata.session_id;
-    return typeof value === 'string' && value.length > 0 ? value : undefined;
-  }
-
-  private shouldFallbackToFreshSession(error: unknown): boolean {
-    if (!(error instanceof CliExitError)) {
-      return false;
-    }
-    const stderr = error.stderr.toLowerCase();
-    return stderr.includes('not found') || stderr.includes('no session') || stderr.includes('invalid');
+  private normalizeForDedup(text: string): string {
+    return text.replace(/\s+/g, ' ').trim();
   }
 
   private parseCliOutput(stdout: string): { content: string; metadata?: Record<string, unknown> } {

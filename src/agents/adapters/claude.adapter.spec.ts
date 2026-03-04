@@ -2,43 +2,32 @@ import { ConfigService } from '@nestjs/config';
 import { AgentStatus } from '../interfaces';
 import { ClaudeAdapter } from './claude.adapter';
 import { CliRunnerService } from '../services/cli-runner.service';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
+
+async function* streamChunks(chunks: string[]) {
+  for (const chunk of chunks) {
+    yield { stream: 'stdout' as const, chunk };
+  }
+}
 
 describe('ClaudeAdapter', () => {
   let adapter: ClaudeAdapter;
-  let cliRunner: { run: jest.Mock };
+  let cliRunner: { run: jest.Mock; stream: jest.Mock };
   let configService: { get: jest.Mock; getOrThrow: jest.Mock };
-  let contextBuilder: { buildContext: jest.Mock };
-  let sharedMemoryService: {
-    getAgentThreadBinding: jest.Mock;
-    setAgentThreadBinding: jest.Mock;
-  };
 
   beforeEach(() => {
     cliRunner = {
       run: jest.fn(),
+      stream: jest.fn(),
     };
     configService = {
       get: jest.fn(),
       getOrThrow: jest.fn(),
     };
-    contextBuilder = {
-      buildContext: jest.fn(),
-    };
-    sharedMemoryService = {
-      getAgentThreadBinding: jest.fn().mockResolvedValue(null),
-      setAgentThreadBinding: jest.fn().mockResolvedValue(undefined),
-    };
 
-    adapter = new ClaudeAdapter(
-      cliRunner as unknown as CliRunnerService,
-      configService as unknown as ConfigService,
-      sharedMemoryService as unknown as SharedMemoryService,
-      contextBuilder as any,
-    );
+    adapter = new ClaudeAdapter(cliRunner as unknown as CliRunnerService, configService as unknown as ConfigService);
   });
 
-  it('当缺少 CLAUDE_TIMEOUT_MS 时应抛错并保持 OFFLINE', async () => {
+  it('throws when CLAUDE_TIMEOUT_MS is missing and keeps status OFFLINE', async () => {
     configService.getOrThrow.mockImplementation((key: string) => {
       throw new Error(`Missing required key: ${key}`);
     });
@@ -48,7 +37,7 @@ describe('ClaudeAdapter', () => {
     expect(adapter.getStatus()).toBe(AgentStatus.OFFLINE);
   });
 
-  it('generate 成功时应返回标准响应', async () => {
+  it('returns a normalized response on generate success', async () => {
     configService.getOrThrow.mockImplementation((key: string) => {
       const values: Record<string, string> = {
         CLAUDE_TIMEOUT_MS: '60000',
@@ -81,7 +70,7 @@ describe('ClaudeAdapter', () => {
     expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
   });
 
-  it('healthCheck 失败时应返回 false', async () => {
+  it('returns false when healthCheck fails', async () => {
     configService.get.mockImplementation((key: string) => {
       if (key === 'CLAUDE_CLI_PATH') {
         return 'claude';
@@ -93,7 +82,7 @@ describe('ClaudeAdapter', () => {
     await expect(adapter.healthCheck()).resolves.toBe(false);
   });
 
-  it('streamGenerate 应产出 generate 返回内容', async () => {
+  it('streamGenerate yields incremental deltas from stream-json output', async () => {
     configService.getOrThrow.mockImplementation((key: string) => {
       const values: Record<string, string> = {
         CLAUDE_TIMEOUT_MS: '60000',
@@ -106,21 +95,24 @@ describe('ClaudeAdapter', () => {
       }
       return undefined;
     });
-    cliRunner.run.mockResolvedValue({
-      stdout: JSON.stringify({ content: 'Hello' }),
-      stderr: '',
-      exitCode: 0,
-    });
+    cliRunner.stream.mockImplementation(() =>
+      streamChunks([
+        '{"type":"content_block_delta","delta":{"text":"Hel"}}\n',
+        '{"type":"content_block_delta","delta":{"text":"lo"}}\n',
+        '{"type":"result","result":"Hello"}\n',
+      ]),
+    );
 
     const deltas: string[] = [];
     for await (const chunk of adapter.streamGenerate('hello', { sessionId: 's1' })) {
       deltas.push(chunk);
     }
 
-    expect(deltas).toEqual(['Hello']);
+    expect(deltas).toEqual(['Hel', 'lo']);
+    expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
   });
 
-  it('generate 应注入语义检索上下文到用户提示词', async () => {
+  it('injects semantic context into the Claude prompt', async () => {
     configService.getOrThrow.mockImplementation((key: string) => {
       const values: Record<string, string> = {
         CLAUDE_TIMEOUT_MS: '60000',
@@ -132,18 +124,6 @@ describe('ClaudeAdapter', () => {
         return 'claude';
       }
       return undefined;
-    });
-    contextBuilder.buildContext.mockResolvedValue({
-      sessionId: 's1',
-      semanticContext: [
-        {
-          id: 'v1',
-          content: '历史相关内容',
-          similarity: 0.9,
-          timestamp: '2026-01-01T00:00:00.000Z',
-        },
-      ],
-      summaries: ['摘要信息'],
     });
     cliRunner.run.mockResolvedValue({
       stdout: JSON.stringify({ content: 'ok' }),
@@ -151,14 +131,25 @@ describe('ClaudeAdapter', () => {
       exitCode: 0,
     });
 
-    await adapter.generate('当前问题', { sessionId: 's1' });
+    await adapter.generate('current question', {
+      sessionId: 's1',
+      semanticContext: [
+        {
+          id: 'v1',
+          content: 'historical semantic context',
+          similarity: 0.9,
+          timestamp: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      summaries: ['summary text'],
+    });
     const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
-    const cliPrompt = call.args[3];
-    expect(cliPrompt).toContain('语义相关的历史上下文');
-    expect(cliPrompt).toContain('历史相关内容');
+    const promptIndex = call.args.findIndex((arg) => arg === '-p');
+    const cliPrompt = call.args[promptIndex + 1];
+    expect(cliPrompt).toContain('historical semantic context');
   });
 
-  it('generate 在 token 预算不足时应截断历史消息', async () => {
+  it('injects conversation history into the Claude prompt', async () => {
     configService.getOrThrow.mockImplementation((key: string) => {
       const values: Record<string, string> = {
         CLAUDE_TIMEOUT_MS: '60000',
@@ -174,55 +165,24 @@ describe('ClaudeAdapter', () => {
       }
       return undefined;
     });
-    contextBuilder.buildContext.mockResolvedValue({
-      sessionId: 's1',
-      conversationHistory: [
-        { id: 'h1', sessionId: 's1', role: 'user', content: '这是很长很长的历史消息，应该被截断'.repeat(10) },
-        { id: 'h2', sessionId: 's1', role: 'assistant', content: '这是历史回答，应该被截断'.repeat(10) },
-      ],
-    });
     cliRunner.run.mockResolvedValue({
       stdout: JSON.stringify({ content: 'ok' }),
       stderr: '',
       exitCode: 0,
     });
 
-    await adapter.generate('当前问题', { sessionId: 's1' });
-    const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
-    const cliPrompt = call.args[3];
-    expect(cliPrompt).toContain('当前问题');
-    expect(cliPrompt).not.toContain('这是很长很长的历史消息');
-  });
-
-  it('存在 session 绑定时应使用 -r 参数续聊', async () => {
-    configService.getOrThrow.mockImplementation((key: string) => {
-      const values: Record<string, string> = {
-        CLAUDE_TIMEOUT_MS: '60000',
-      };
-      return values[key];
-    });
-    configService.get.mockImplementation((key: string) => {
-      if (key === 'CLAUDE_CLI_PATH') {
-        return 'claude';
-      }
-      return undefined;
-    });
-    sharedMemoryService.getAgentThreadBinding.mockResolvedValue({
+    await adapter.generate('current question', {
       sessionId: 's1',
-      agentId: 'claude-001',
-      threadId: 'sess-old',
-      updatedAt: new Date().toISOString(),
+      conversationHistory: [
+        { id: 'h1', sessionId: 's1', role: 'user', content: 'long historical user message '.repeat(10) },
+        { id: 'h2', sessionId: 's1', role: 'assistant', content: 'historical assistant answer '.repeat(10) },
+      ],
     });
-    cliRunner.run.mockResolvedValue({
-      stdout: JSON.stringify({ content: 'ok', session_id: 'sess-new' }),
-      stderr: '',
-      exitCode: 0,
-    });
-
-    await adapter.generate('hello', { sessionId: 's1' });
     const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
-    expect(call.args[0]).toBe('-r');
-    expect(call.args[1]).toBe('sess-old');
-    expect(sharedMemoryService.setAgentThreadBinding).toHaveBeenCalledWith('s1', 'claude-001', 'sess-new');
+    const promptIndex = call.args.findIndex((arg) => arg === '-p');
+    const cliPrompt = call.args[promptIndex + 1];
+    expect(cliPrompt).toContain('CURRENT_QUESTION');
+    expect(cliPrompt).toContain('CONVERSATION_CONTEXT');
+    expect(cliPrompt).toContain('long historical user message');
   });
 });

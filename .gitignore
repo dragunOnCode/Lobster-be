@@ -4,3 +4,8 @@ DEPENDENCY-FIX-GUIDE.md
 fix-dependencies.ps1
 package.json.backup
 package.json.fixed
+Frontend/tsconfig.app.tsbuildinfo
+.npm-cache
+.claude
+.codex
+.gemini

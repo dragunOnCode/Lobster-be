@@ -12,4 +12,8 @@ export class TranscriptService {
   async readEvents(sessionId: string): Promise<TranscriptEvent[]> {
     return this.workspaceService.readTranscript(sessionId);
   }
+
+  async replaceEvents(sessionId: string, events: TranscriptEvent[]): Promise<void> {
+    await this.workspaceService.replaceTranscript(sessionId, events);
+  }
 }

@@ -5,6 +5,7 @@ import { MessageEntity, SessionEntity } from '../database/entities';
 import { MemoryMessage, ShortTermMemoryService } from '../memory/services/short-term-memory.service';
 import { ChromaService } from '../vector/services/chroma.service';
 import { WorkspaceService } from '../workspace/workspace.service';
+import { ConversationSummaryService } from './conversation-summary.service';
 
 export interface ChatMessage {
   id: string;
@@ -18,6 +19,20 @@ export interface ChatMessage {
   createdAt: Date;
 }
 
+interface TranscriptMessageEvent {
+  type: 'message_saved';
+  messageId?: unknown;
+  sessionId?: unknown;
+  userId?: unknown;
+  agentId?: unknown;
+  agentName?: unknown;
+  role?: unknown;
+  content?: unknown;
+  contentPreview?: unknown;
+  mentionedAgents?: unknown;
+  timestamp?: unknown;
+}
+
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
@@ -29,19 +44,14 @@ export class ChatService {
     @Optional() private readonly workspaceService?: WorkspaceService,
     @Optional() private readonly shortTermMemoryService?: ShortTermMemoryService,
     @Optional() private readonly chromaService?: ChromaService,
+    @Optional() private readonly conversationSummaryService?: ConversationSummaryService,
   ) {}
 
   async saveMessage(input: Omit<ChatMessage, 'id' | 'createdAt'>): Promise<ChatMessage> {
     await this.workspaceService?.initializeSession(input.sessionId);
-    await this.workspaceService?.appendTranscript(input.sessionId, {
-      type: 'message_saved',
-      role: input.role,
-      userId: input.userId,
-      agentId: input.agentId,
-      contentPreview: input.content.slice(0, 200),
-    });
 
     const persistable = this.isUuid(input.sessionId) && !!this.messageRepo;
+    let message: ChatMessage;
     if (persistable) {
       await this.ensureSessionExists(input.sessionId);
 
@@ -58,7 +68,7 @@ export class ChatService {
       });
 
       const saved = await this.messageRepo!.save(entity);
-      const message = {
+      message = {
         id: saved.id,
         sessionId: saved.sessionId,
         userId: saved.userId ?? input.userId,
@@ -69,23 +79,34 @@ export class ChatService {
         mentionedAgents: saved.mentionedAgents ?? [],
         createdAt: saved.createdAt,
       };
-      await this.tryAppendMemory(message);
-      await this.tryAddToVector(message);
-      return message;
+    } else {
+      message = {
+        ...input,
+        id: this.generateId(),
+        createdAt: new Date(),
+      };
+
+      const sessionMessages = this.messages.get(input.sessionId) ?? [];
+      sessionMessages.push(message);
+      this.messages.set(input.sessionId, sessionMessages);
     }
 
-    const message: ChatMessage = {
-      ...input,
-      id: this.generateId(),
-      createdAt: new Date(),
-    };
-
-    const sessionMessages = this.messages.get(input.sessionId) ?? [];
-    sessionMessages.push(message);
-    this.messages.set(input.sessionId, sessionMessages);
-
+    await this.workspaceService?.appendTranscript(input.sessionId, {
+      type: 'message_saved',
+      messageId: message.id,
+      sessionId: message.sessionId,
+      role: message.role,
+      userId: message.userId,
+      agentId: message.agentId,
+      agentName: message.agentName,
+      mentionedAgents: message.mentionedAgents ?? [],
+      content: message.content,
+      contentPreview: message.content.slice(0, 200),
+      timestamp: message.createdAt.toISOString(),
+    });
     await this.tryAppendMemory(message);
     await this.tryAddToVector(message);
+    await this.tryGenerateSummary(message.sessionId);
     return message;
   }
 
@@ -118,7 +139,57 @@ export class ChatService {
     }
 
     const sessionMessages = this.messages.get(sessionId) ?? [];
-    return sessionMessages.slice(-limit);
+    if (sessionMessages.length > 0) {
+      return sessionMessages.slice(-limit);
+    }
+
+    const transcriptMessages = await this.tryGetTranscriptMessages(sessionId);
+    if (transcriptMessages.length > 0) {
+      await this.trySaveMemory(sessionId, transcriptMessages);
+      return transcriptMessages.slice(-limit);
+    }
+
+    return [];
+  }
+
+  async listSessions(): Promise<string[]> {
+    if (this.workspaceService) {
+      return this.workspaceService.listSessions();
+    }
+    return Array.from(this.messages.keys());
+  }
+
+  async replaceSessionMessages(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    const normalized = [...messages]
+      .filter((message) => message.sessionId === sessionId)
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+
+    if (this.isUuid(sessionId) && this.messageRepo) {
+      await this.ensureSessionExists(sessionId);
+      await this.messageRepo.delete({ sessionId });
+
+      if (normalized.length > 0) {
+        await this.messageRepo.insert(
+          normalized.map((message) => ({
+            id: message.id,
+            sessionId: message.sessionId,
+            userId: message.userId && this.isUuid(message.userId) ? message.userId : null,
+            agentId: message.agentId ?? null,
+            agentName: message.agentName ?? null,
+            role: message.role,
+            content: message.content,
+            mentionedAgents: message.mentionedAgents ?? [],
+            metadata: !message.userId || this.isUuid(message.userId) ? null : { externalUserId: message.userId },
+            createdAt: message.createdAt,
+          })),
+        );
+      }
+    } else {
+      this.messages.set(sessionId, normalized);
+    }
+
+    await this.tryReplaceMemory(sessionId, normalized);
+    await this.tryRebuildVectors(sessionId, normalized);
   }
 
   private generateId(): string {
@@ -207,6 +278,122 @@ export class ChatService {
     } catch {
       this.logger.warn(`Vector index failed for message=${message.id}, continue without semantic index`);
     }
+  }
+
+  private async tryReplaceMemory(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    if (!this.shortTermMemoryService) {
+      return;
+    }
+    try {
+      if (messages.length === 0) {
+        await this.shortTermMemoryService.clear(sessionId);
+        return;
+      }
+
+      await this.shortTermMemoryService.save(
+        sessionId,
+        messages.map((item) => this.toMemoryMessage(item)),
+      );
+    } catch {
+      // ignore redis errors
+    }
+  }
+
+  private async tryRebuildVectors(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    if (!this.chromaService) {
+      return;
+    }
+    try {
+      await this.chromaService.deleteBySessionId(sessionId);
+      if (messages.length === 0) {
+        return;
+      }
+
+      await this.chromaService.addDocuments(
+        messages.map((message) => ({
+          id: message.id,
+          content: message.content,
+          metadata: {
+            sessionId: message.sessionId,
+            role: message.role,
+            agentId: message.agentId ?? '',
+            userId: message.userId ?? '',
+            createdAt: message.createdAt.toISOString(),
+          },
+        })),
+      );
+      this.logger.debug(`Vector rebuilt session=${sessionId} messages=${messages.length}`);
+    } catch {
+      this.logger.warn(`Vector rebuild failed for session=${sessionId}, continue without semantic index`);
+    }
+  }
+
+  private async tryGenerateSummary(sessionId: string): Promise<void> {
+    if (!this.conversationSummaryService) {
+      return;
+    }
+    try {
+      await this.conversationSummaryService.maybeGenerate(sessionId);
+    } catch {
+      this.logger.warn(`Auto summary failed session=${sessionId}, continue without summary`);
+    }
+  }
+
+  private async tryGetTranscriptMessages(sessionId: string): Promise<ChatMessage[]> {
+    if (!this.workspaceService) {
+      return [];
+    }
+    try {
+      const events = await this.workspaceService.readTranscript(sessionId);
+      return events
+        .map((event, index) => this.fromTranscriptMessageEvent(sessionId, event as TranscriptMessageEvent, index))
+        .filter((message): message is ChatMessage => message !== null);
+    } catch {
+      return [];
+    }
+  }
+
+  private fromTranscriptMessageEvent(
+    sessionId: string,
+    event: TranscriptMessageEvent,
+    index: number,
+  ): ChatMessage | null {
+    if (event.type !== 'message_saved') {
+      return null;
+    }
+
+    const role = event.role;
+    if (role !== 'user' && role !== 'assistant' && role !== 'system') {
+      return null;
+    }
+
+    const content =
+      typeof event.content === 'string'
+        ? event.content
+        : typeof event.contentPreview === 'string'
+          ? event.contentPreview
+          : '';
+    if (!content) {
+      return null;
+    }
+
+    const timestamp = typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString();
+    const createdAt = new Date(timestamp);
+
+    return {
+      id:
+        typeof event.messageId === 'string' && event.messageId.length > 0
+          ? event.messageId
+          : `transcript_${sessionId}_${index}`,
+      sessionId,
+      userId: typeof event.userId === 'string' ? event.userId : undefined,
+      agentId: typeof event.agentId === 'string' ? event.agentId : undefined,
+      agentName: typeof event.agentName === 'string' ? event.agentName : undefined,
+      role,
+      content,
+      mentionedAgents: Array.isArray(event.mentionedAgents) ? event.mentionedAgents.map((item) => String(item)) : [],
+      createdAt: Number.isNaN(createdAt.getTime()) ? new Date() : createdAt,
+    };
   }
 
   private toMemoryMessage(message: ChatMessage): MemoryMessage {

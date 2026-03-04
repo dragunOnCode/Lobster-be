@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CliExitError, CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
+import { CliNotFoundError, CliRunnerService } from '../services/cli-runner.service';
 import { AgentContext, AgentResponse, AgentStatus, DecisionResult, ILLMAdapter, Message } from '../interfaces';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
+import { PromptContextBuilderService } from '../services/prompt-context-builder.service';
 
 @Injectable()
 export class CodexAdapter implements ILLMAdapter {
@@ -16,38 +16,47 @@ export class CodexAdapter implements ILLMAdapter {
 
   private status: AgentStatus = AgentStatus.OFFLINE;
   private readonly keywords = ['审查', '检查', '测试', 'bug', '问题', '安全'];
-  private readonly codexThreadsBySession = new Map<string, string>();
   private readonly logger = new Logger(CodexAdapter.name);
 
   constructor(
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
-    private readonly sharedMemoryService: SharedMemoryService,
+    private readonly promptContextBuilder?: PromptContextBuilderService,
   ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
     const cliPath = this.configService.getOrThrow<string>('CODEX_CLI_PATH');
     const timeoutMs = Number(this.configService.getOrThrow<string>('CODEX_TIMEOUT_MS'));
+    const historyLimit = Number(this.configService.get<string>('CODEX_CONTEXT_HISTORY_LIMIT') ?? '12');
+    const semanticLimit = Number(this.configService.get<string>('CODEX_CONTEXT_SEMANTIC_LIMIT') ?? '3');
+    const summaryLimit = Number(this.configService.get<string>('CODEX_CONTEXT_SUMMARY_LIMIT') ?? '2');
+    const tokenBudget = Number(this.configService.get<string>('CODEX_CONTEXT_TOKEN_BUDGET') ?? '12000');
+    const lineMaxChars = Number(this.configService.get<string>('CODEX_CONTEXT_LINE_MAX_CHARS') ?? '320');
     this.status = AgentStatus.BUSY;
 
     try {
-      this.logger.log(`generate: ${prompt}, context: ${JSON.stringify(context)}`);
-      const existingThreadId = await this.resolveExistingThreadId(context.sessionId);
-      const result = await this.runCodex(cliPath, prompt, timeoutMs, existingThreadId);
+      const enhancedContext = context;
+      const userPrompt = this.promptContextBuilder?.buildUserPrompt(prompt) ?? this.buildUserPrompt(prompt);
+      const promptBuilt = this.promptContextBuilder?.buildCliPromptWithMetrics(userPrompt, enhancedContext, {
+        historyLimit,
+        semanticLimit,
+        summaryLimit,
+        tokenBudget,
+        lineMaxChars,
+      });
+      const cliPrompt = promptBuilt?.prompt ?? this.buildCliPrompt(userPrompt, this.buildContextReferenceBlock(enhancedContext, userPrompt));
+
+      this.logger.log(
+        `generate session=${enhancedContext.sessionId} contextChars=${promptBuilt?.metrics.contextChars ?? cliPrompt.length} contextEstimatedTokens=${promptBuilt?.metrics.contextEstimatedTokens ?? Math.ceil(cliPrompt.length / 4)} historyItems=${promptBuilt?.metrics.historyItems ?? 'n/a'} semanticItems=${promptBuilt?.metrics.semanticItems ?? 'n/a'} summaryItems=${promptBuilt?.metrics.summaryItems ?? 'n/a'} trimmedItems=${promptBuilt?.metrics.trimmedItems ?? 'n/a'}`,
+      );
+      const result = await this.runCodex(cliPath, cliPrompt, timeoutMs);
 
       const parsed = this.parseCliOutput(result.stdout);
-      const threadId = this.extractThreadIdFromMetadata(parsed.metadata);
-      if (threadId) {
-        await this.persistThreadBinding(context.sessionId, threadId);
-      }
 
       this.status = AgentStatus.ONLINE;
       return {
         content: parsed.content,
-        metadata: {
-          ...parsed.metadata,
-          codexThreadId: threadId,
-        },
+        metadata: parsed.metadata,
         timestamp: new Date(),
       };
     } catch (error) {
@@ -150,111 +159,77 @@ export class CodexAdapter implements ILLMAdapter {
     cliPath: string,
     prompt: string,
     timeoutMs: number,
-    existingThreadId?: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    if (!existingThreadId) {
-      this.logger.log(
-        `runCodex: ${cliPath}, 
-        args: ${['exec', '--json', '-']}, 
-        timeout: ${timeoutMs}, 
-        input: ${prompt}`,
-      );
-      return this.cliRunner.run({
-        command: cliPath,
-        args: ['exec', '--json', '-'],
-        timeout: timeoutMs,
-        input: prompt,
+    this.logger.log(
+      `runCodex: ${cliPath}, args: ${['exec', '--json', '-']}, timeout: ${timeoutMs}, input: ${prompt}`,
+    );
+    return this.cliRunner.run({
+      command: cliPath,
+      args: ['exec', '--json', '-'],
+      timeout: timeoutMs,
+      input: prompt,
+    });
+  }
+
+  private buildUserPrompt(prompt: string): string {
+    const trimmed = prompt.trim();
+    const withoutMention = trimmed.replace(/^@\S+\s*/u, '').trim();
+    return withoutMention.length > 0 ? withoutMention : trimmed;
+  }
+
+  private buildCliPrompt(userPrompt: string, contextReference: string): string {
+    return [
+      `CURRENT_QUESTION: ${userPrompt}`,
+      '',
+      'CONTEXT_REFERENCE:',
+      contextReference,
+      '',
+      '回答要求：优先直接回答 CURRENT_QUESTION；CONTEXT_REFERENCE 仅作补充参考。',
+    ]
+      .filter((part) => part.length > 0)
+      .join('\n');
+  }
+
+  private buildContextReferenceBlock(context: AgentContext, currentUserPrompt: string): string {
+    const sections: string[] = [];
+    const normalizedCurrent = this.normalizeForDedup(currentUserPrompt);
+
+    const historyLines = (context.conversationHistory ?? [])
+      .filter((item) => item.content?.trim())
+      .filter((item) => this.normalizeForDedup(item.content) !== normalizedCurrent)
+      .slice(-6)
+      .map((item) => {
+        const role = item.role === 'assistant' && item.agentId ? `ASSISTANT(${item.agentId})` : item.role.toUpperCase();
+        return `${role}: ${this.truncate(item.content.replace(/\s+/g, ' ').trim(), 220)}`;
       });
+    if (historyLines.length > 0) {
+      sections.push('近期对话:\n' + historyLines.join('\n'));
     }
 
-    try {
-      this.logger.log(
-        `runCodex: ${cliPath}, args: ${['exec', 'resume', '--json', existingThreadId, '-']}, timeout: ${timeoutMs}, input: ${prompt}`,
-      );
-      return await this.cliRunner.run({
-        command: cliPath,
-        args: ['exec', 'resume', '--json', existingThreadId, '-'],
-        timeout: timeoutMs,
-        input: prompt,
-      });
-    } catch (error) {
-      if (!this.shouldFallbackToFreshExec(error)) {
-        throw error;
-      }
-
-      return this.cliRunner.run({
-        command: cliPath,
-        args: ['exec', '--json', '-'],
-        timeout: timeoutMs,
-        input: prompt,
-      });
+    const semanticLines = (context.semanticContext ?? [])
+      .slice(0, 3)
+      .map((item, index) => `[${index + 1}] 相似度=${item.similarity.toFixed(3)} ${this.truncate(item.content, 220)}`);
+    if (semanticLines.length > 0) {
+      sections.push('语义相关历史:\n' + semanticLines.join('\n'));
     }
+
+    const summaries = (context.summaries ?? []).slice(0, 2).map((item, index) => `${index + 1}. ${this.truncate(item, 220)}`);
+    if (summaries.length > 0) {
+      sections.push('历史摘要:\n' + summaries.join('\n'));
+    }
+
+    return sections.join('\n\n');
   }
 
-  private async resolveExistingThreadId(sessionId: string): Promise<string | undefined> {
-    const localThreadId = this.codexThreadsBySession.get(sessionId);
-    if (localThreadId) {
-      return localThreadId;
+  private truncate(text: string, maxLen: number): string {
+    if (text.length <= maxLen) {
+      return text;
     }
-
-    try {
-      const binding = await this.sharedMemoryService.getAgentThreadBinding(sessionId, this.id);
-      if (!binding?.threadId) {
-        return undefined;
-      }
-      this.codexThreadsBySession.set(sessionId, binding.threadId);
-      return binding.threadId;
-    } catch {
-      return undefined;
-    }
+    return `${text.slice(0, maxLen)}...`;
   }
 
-  private async persistThreadBinding(sessionId: string, threadId: string): Promise<void> {
-    this.codexThreadsBySession.set(sessionId, threadId);
-    try {
-      await this.sharedMemoryService.setAgentThreadBinding(sessionId, this.id, threadId);
-    } catch {
-      // Redis 不可用时降级到进程内映射
-    }
-  }
-
-  private extractThreadIdFromMetadata(metadata?: Record<string, unknown>): string | undefined {
-    if (!metadata) {
-      return undefined;
-    }
-
-    const direct = this.pickString(metadata, 'thread_id');
-    if (direct) {
-      return direct;
-    }
-
-    const events = metadata.events;
-    if (!Array.isArray(events)) {
-      return undefined;
-    }
-
-    for (const event of events) {
-      if (!event || typeof event !== 'object') {
-        continue;
-      }
-      const eventRecord = event as Record<string, unknown>;
-      if (this.pickString(eventRecord, 'type') !== 'thread.started') {
-        continue;
-      }
-      const threadId = this.pickString(eventRecord, 'thread_id');
-      if (threadId) {
-        return threadId;
-      }
-    }
-    return undefined;
-  }
-
-  private shouldFallbackToFreshExec(error: unknown): boolean {
-    if (!(error instanceof CliExitError)) {
-      return false;
-    }
-    const stderr = error.stderr.toLowerCase();
-    return stderr.includes('not found') || stderr.includes('no session') || stderr.includes('unknown');
+  private normalizeForDedup(text: string): string {
+    return text.replace(/\s+/g, ' ').trim();
   }
 
   private extractContentFromEvents(events: Record<string, unknown>[]): string | undefined {

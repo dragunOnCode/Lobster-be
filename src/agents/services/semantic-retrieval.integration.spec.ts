@@ -3,7 +3,6 @@ import { ClaudeAdapter } from '../adapters/claude.adapter';
 import { ContextBuilderService } from './context-builder.service';
 import { ChatService } from '../../chat/chat.service';
 import { CliRunnerService } from './cli-runner.service';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 
 type StoredVector = {
   id: string;
@@ -41,27 +40,20 @@ class InMemoryChromaService {
     const queryTokens = this.tokenize(query);
     const candidates = this.docs.filter((item) => !sessionId || item.metadata.sessionId === sessionId);
 
-    const ranked = candidates
-      .map((item) => {
-        const score = this.score(queryTokens, this.tokenize(item.content));
-        return {
-          id: item.id,
-          content: item.content,
-          metadata: item.metadata,
-          similarity: score,
-        };
-      })
+    return candidates
+      .map((item) => ({
+        id: item.id,
+        content: item.content,
+        metadata: item.metadata,
+        similarity: this.score(queryTokens, this.tokenize(item.content)),
+      }))
       .filter((item) => item.similarity >= minSimilarity)
-      .sort((a, b) => b.similarity - a.similarity)
+      .sort((left, right) => right.similarity - left.similarity)
       .slice(0, limit);
-
-    return ranked;
   }
 
   private tokenize(text: string): string[] {
-    const normalized = text.toLowerCase();
-    const terms = normalized.match(/[a-z0-9]+|[\u4e00-\u9fa5]/g) ?? [];
-    return terms;
+    return text.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fa5]/g) ?? [];
   }
 
   private score(queryTokens: string[], docTokens: string[]): number {
@@ -82,7 +74,7 @@ class InMemoryChromaService {
 }
 
 describe('Semantic Retrieval Integration', () => {
-  it('多轮后应把早期事实注入 Claude 提示词', async () => {
+  it('injects early semantic facts when the adapter receives prebuilt context', async () => {
     const chromaService = new InMemoryChromaService();
 
     const shortMemoryStore = new Map<string, any[]>();
@@ -114,19 +106,19 @@ describe('Semantic Retrieval Integration', () => {
     await chatService.saveMessage({
       sessionId: 'session-semantic',
       role: 'user',
-      content: '我们使用 PostgreSQL 作为关系型数据库，并启用了 pgvector。',
+      content: 'We use PostgreSQL as the relational database and enable pgvector.',
       userId: 'u1',
     });
     await chatService.saveMessage({
       sessionId: 'session-semantic',
       role: 'assistant',
-      content: '已记录：数据库是 PostgreSQL。',
+      content: 'Recorded: the database is PostgreSQL.',
       agentId: 'claude-001',
     });
     await chatService.saveMessage({
       sessionId: 'session-semantic',
       role: 'user',
-      content: '另外，缓存使用 Redis。',
+      content: 'In addition, Redis is used for caching.',
       userId: 'u1',
     });
 
@@ -151,19 +143,17 @@ describe('Semantic Retrieval Integration', () => {
     const adapter = new ClaudeAdapter(
       cliRunner as unknown as CliRunnerService,
       configService as unknown as ConfigService,
-      {
-        getAgentThreadBinding: jest.fn().mockResolvedValue(null),
-        setAgentThreadBinding: jest.fn().mockResolvedValue(undefined),
-      } as unknown as SharedMemoryService,
-      contextBuilder,
     );
+    const question = 'Which database is PostgreSQL in our stack?';
+    const context = await contextBuilder.buildContext('session-semantic', question);
 
-    await adapter.generate('我们使用什么关系型数据库？', { sessionId: 'session-semantic' });
+    await adapter.generate(question, context);
 
     const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
-    const cliPrompt = call.args[3];
-    expect(cliPrompt).toContain('语义相关的历史上下文');
+    const promptIndex = call.args.findIndex((arg) => arg === '-p');
+    const cliPrompt = call.args[promptIndex + 1];
+    expect(cliPrompt).toContain('SEMANTIC_REFERENCE');
     expect(cliPrompt).toContain('PostgreSQL');
-    expect(cliPrompt).toContain('我们使用什么关系型数据库');
+    expect(cliPrompt).toContain(question);
   });
 });

@@ -20,13 +20,6 @@ export interface AgentDecisionSnapshot {
   [key: string]: unknown;
 }
 
-export interface AgentThreadBinding {
-  sessionId: string;
-  agentId: string;
-  threadId: string;
-  updatedAt: string;
-}
-
 @Injectable()
 export class SharedMemoryService {
   private readonly ttlSeconds: number;
@@ -74,37 +67,16 @@ export class SharedMemoryService {
     }
   }
 
-  async setAgentThreadBinding(sessionId: string, agentId: string, threadId: string): Promise<void> {
-    const key = this.getAgentThreadKey(sessionId, agentId);
-    const payload: AgentThreadBinding = {
-      sessionId,
-      agentId,
-      threadId,
-      updatedAt: new Date().toISOString(),
-    };
-    await this.redis.set(key, JSON.stringify(payload), 'EX', this.ttlSeconds);
-  }
+  async clearSession(sessionId: string): Promise<void> {
+    const workspaceKey = this.getWorkspaceStateKey(sessionId);
+    const decisionKeys = await this.collectKeysByPattern(`memory:shared:decision:${sessionId}:*`);
+    const keys = [workspaceKey, ...decisionKeys];
 
-  async getAgentThreadBinding(sessionId: string, agentId: string): Promise<AgentThreadBinding | null> {
-    const key = this.getAgentThreadKey(sessionId, agentId);
-    const raw = await this.redis.get(key);
-    if (!raw) {
-      return null;
+    if (keys.length === 0) {
+      return;
     }
-    try {
-      const parsed = JSON.parse(raw) as Partial<AgentThreadBinding>;
-      if (typeof parsed.threadId !== 'string' || parsed.threadId.length === 0) {
-        return null;
-      }
-      return {
-        sessionId,
-        agentId,
-        threadId: parsed.threadId,
-        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
-      };
-    } catch {
-      return null;
-    }
+
+    await this.redis.del(...keys);
   }
 
   private getWorkspaceStateKey(sessionId: string): string {
@@ -115,7 +87,16 @@ export class SharedMemoryService {
     return `memory:shared:decision:${sessionId}:${agentId}`;
   }
 
-  private getAgentThreadKey(sessionId: string, agentId: string): string {
-    return `memory:shared:thread:${sessionId}:${agentId}`;
+  private async collectKeysByPattern(pattern: string): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = '0';
+
+    do {
+      const [nextCursor, batch] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+      cursor = nextCursor;
+      keys.push(...batch);
+    } while (cursor !== '0');
+
+    return keys;
   }
 }

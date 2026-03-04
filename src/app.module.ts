@@ -11,6 +11,7 @@ import { MemoryModule } from './memory/memory.module';
 import { LobsterConfigModule } from './config/config.module';
 import { TasksModule } from './tasks/tasks.module';
 import { VectorModule } from './vector/vector.module';
+import { LangGraphModule } from './langgraph/langgraph.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { VectorModule } from './vector/vector.module';
     LobsterConfigModule,
     TasksModule,
     VectorModule,
+    LangGraphModule,
   ],
   controllers: [AppController],
   providers: [AppService],

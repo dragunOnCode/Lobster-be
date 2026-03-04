@@ -5,6 +5,11 @@ import { MemoryMessage, ShortTermMemoryService } from '../../memory/services/sho
 import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 import { ChromaService, VectorSearchResult } from '../../vector/services/chroma.service';
 
+export interface BuildContextOptions {
+  conversationHistorySource?: 'semantic' | 'short-term-memory' | 'none';
+  includeWorkspaceState?: boolean;
+}
+
 @Injectable()
 export class ContextBuilderService {
   private readonly logger = new Logger(ContextBuilderService.name);
@@ -25,7 +30,14 @@ export class ContextBuilderService {
     this.summaryMinSimilarity = Number(this.configService.get<string>('SEMANTIC_SUMMARY_MIN_SIMILARITY') ?? '0.7');
   }
 
-  async buildContext(sessionId: string, currentMessage: string, userId?: string): Promise<AgentContext> {
+  async buildContext(
+    sessionId: string,
+    currentMessage: string,
+    userId?: string,
+    options?: BuildContextOptions,
+  ): Promise<AgentContext> {
+    const startedAt = Date.now();
+    const resolved = this.resolveOptions(options);
     const [semanticResults, recentMessages, summaries, workspaceState] = await Promise.all([
       this.safeSearch({
         query: currentMessage,
@@ -42,24 +54,29 @@ export class ContextBuilderService {
         minSimilarity: this.summaryMinSimilarity,
         collection: 'summaries',
       }),
-      this.sharedMemory.getWorkspaceState(sessionId),
+      resolved.includeWorkspaceState ? this.sharedMemory.getWorkspaceState(sessionId) : Promise.resolve(null),
     ]);
 
     const semanticContext = semanticResults.map((item) => this.toSemanticContext(item));
     const semanticHistory = semanticResults.map((item) => this.toMessage(item, sessionId));
     const fallbackHistory = recentMessages.map((item) => this.memoryToMessage(item, sessionId));
-    const conversationSource = semanticHistory.length > 0 ? 'semantic' : 'short-term-memory';
+    const conversationHistory = this.selectConversationHistory(resolved.conversationHistorySource, semanticHistory, fallbackHistory);
+    const conversationSource = this.describeConversationSource(
+      resolved.conversationHistorySource,
+      semanticHistory.length,
+      fallbackHistory.length,
+    );
     const topSimilarity =
       semanticContext.length > 0 ? Math.max(...semanticContext.map((item) => item.similarity)).toFixed(3) : 'n/a';
 
     this.logger.debug(
-      `Context built session=${sessionId} source=${conversationSource} semanticHits=${semanticContext.length} summaries=${summaries.length} fallbackMessages=${fallbackHistory.length} topSimilarity=${topSimilarity} thresholds=msg:${this.messageMinSimilarity}/sum:${this.summaryMinSimilarity}`,
+      `Context built session=${sessionId} source=${conversationSource} semanticHits=${semanticContext.length} summaries=${summaries.length} fallbackMessages=${fallbackHistory.length} topSimilarity=${topSimilarity} thresholds=msg:${this.messageMinSimilarity}/sum:${this.summaryMinSimilarity} buildContextLatencyMs=${Date.now() - startedAt}`,
     );
 
     return {
       sessionId,
       userId,
-      conversationHistory: semanticHistory.length > 0 ? semanticHistory : fallbackHistory,
+      conversationHistory,
       semanticContext,
       summaries: summaries.map((item) => item.content),
       sharedMemory: workspaceState ? { metadata: workspaceState } : undefined,
@@ -125,5 +142,42 @@ export class ContextBuilderService {
       this.logger.warn(`Semantic search fallback to memory: ${reason}`);
       return [];
     }
+  }
+
+  private resolveOptions(options?: BuildContextOptions): Required<BuildContextOptions> {
+    return {
+      conversationHistorySource: options?.conversationHistorySource ?? 'semantic',
+      includeWorkspaceState: options?.includeWorkspaceState ?? true,
+    };
+  }
+
+  private selectConversationHistory(
+    source: Required<BuildContextOptions>['conversationHistorySource'],
+    semanticHistory: Message[],
+    fallbackHistory: Message[],
+  ): Message[] {
+    switch (source) {
+      case 'none':
+        return [];
+      case 'short-term-memory':
+        return fallbackHistory;
+      case 'semantic':
+      default:
+        return semanticHistory.length > 0 ? semanticHistory : fallbackHistory;
+    }
+  }
+
+  private describeConversationSource(
+    source: Required<BuildContextOptions>['conversationHistorySource'],
+    semanticCount: number,
+    fallbackCount: number,
+  ): string {
+    if (source === 'none') {
+      return 'disabled';
+    }
+    if (source === 'short-term-memory') {
+      return 'short-term-memory';
+    }
+    return semanticCount > 0 ? 'semantic' : fallbackCount > 0 ? 'short-term-memory' : 'empty';
   }
 }

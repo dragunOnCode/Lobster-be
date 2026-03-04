@@ -1,15 +1,13 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { AgentService } from './agent.service';
 import { CliRunnerService } from './cli-runner.service';
-import { ContextBuilderService } from './context-builder.service';
+import { PromptContextBuilderService } from './prompt-context-builder.service';
 import { ClaudeAdapter } from '../adapters/claude.adapter';
 import { CodexAdapter } from '../adapters/codex.adapter';
 import { GeminiAdapter } from '../adapters/gemini.adapter';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 import {
   AgentConfigEntry,
   AgentsConfig,
@@ -78,11 +76,9 @@ export class AgentConfigService implements OnModuleInit {
 
   constructor(
     private readonly agentService: AgentService,
-    private readonly httpService: HttpService,
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
-    private readonly contextBuilder: ContextBuilderService,
-    private readonly sharedMemoryService: SharedMemoryService,
+    private readonly promptContextBuilder: PromptContextBuilderService,
   ) {
     this.configPath = path.resolve(process.cwd(), 'config', 'agents.config.json');
   }
@@ -127,11 +123,11 @@ export class AgentConfigService implements OnModuleInit {
   private createBaseAdapter(type: string): ILLMAdapter {
     switch (type) {
       case 'claude':
-        return new ClaudeAdapter(this.cliRunner, this.configService, this.sharedMemoryService, this.contextBuilder);
+        return new ClaudeAdapter(this.cliRunner, this.configService, this.promptContextBuilder);
       case 'codex':
-        return new CodexAdapter(this.cliRunner, this.configService, this.sharedMemoryService);
+        return new CodexAdapter(this.cliRunner, this.configService, this.promptContextBuilder);
       case 'gemini':
-        return new GeminiAdapter(this.cliRunner, this.configService, this.sharedMemoryService);
+        return new GeminiAdapter(this.cliRunner, this.configService, this.promptContextBuilder);
       default:
         throw new Error(`Unknown agent type: ${type}`);
     }

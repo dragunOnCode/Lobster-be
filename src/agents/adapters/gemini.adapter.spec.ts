@@ -1,13 +1,11 @@
 import { ConfigService } from '@nestjs/config';
 import { GeminiAdapter } from './gemini.adapter';
 import { CliRunnerService } from '../services/cli-runner.service';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 
 describe('GeminiAdapter', () => {
   let adapter: GeminiAdapter;
   let cliRunner: { run: jest.Mock };
-  let configService: { getOrThrow: jest.Mock };
-  let sharedMemoryService: { getAgentThreadBinding: jest.Mock; setAgentThreadBinding: jest.Mock };
+  let configService: { getOrThrow: jest.Mock; get: jest.Mock };
 
   beforeEach(() => {
     cliRunner = { run: jest.fn() };
@@ -19,51 +17,34 @@ describe('GeminiAdapter', () => {
         };
         return values[key];
       }),
-    };
-    sharedMemoryService = {
-      getAgentThreadBinding: jest.fn().mockResolvedValue(null),
-      setAgentThreadBinding: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockReturnValue(undefined),
     };
 
-    adapter = new GeminiAdapter(
-      cliRunner as unknown as CliRunnerService,
-      configService as unknown as ConfigService,
-      sharedMemoryService as unknown as SharedMemoryService,
-    );
+    adapter = new GeminiAdapter(cliRunner as unknown as CliRunnerService, configService as unknown as ConfigService);
   });
 
   it('generate 应解析 CLI 输出', async () => {
+    const context = {
+      sessionId: 's1',
+      semanticContext: [{ id: 'v1', content: '品牌风格：简洁明亮', similarity: 0.91 }],
+      summaries: ['之前讨论：登录页突出主按钮'],
+      conversationHistory: [
+        { id: 'm1', sessionId: 's1', role: 'assistant' as const, content: '建议采用浅色系', agentId: 'gemini-001' },
+      ],
+    };
     cliRunner.run.mockResolvedValue({
       stdout: '{"response":"gemini result","style":"creative","session_id":"g-session-1"}',
       stderr: '',
       exitCode: 0,
     });
 
-    const result = await adapter.generate('设计一个登录页面', { sessionId: 's1' });
+    const result = await adapter.generate('设计一个登录页面', context);
     expect(result.content).toBe('gemini result');
-    expect(result.metadata).toEqual(expect.objectContaining({ style: 'creative', geminiSessionId: 'g-session-1' }));
-  });
-
-  it('generate 应在已有会话时使用 -r 续聊', async () => {
-    sharedMemoryService.getAgentThreadBinding.mockResolvedValueOnce({
-      sessionId: 's1',
-      agentId: 'gemini-001',
-      threadId: 'g-session-1',
-      updatedAt: new Date().toISOString(),
-    });
-    cliRunner.run.mockResolvedValue({
-      stdout: '{"response":"continued","session_id":"g-session-1"}',
-      stderr: '',
-      exitCode: 0,
-    });
-
-    await adapter.generate('继续', { sessionId: 's1' });
-    expect(cliRunner.run).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: 'gemini',
-        args: ['-r', 'g-session-1', '-p', '继续', '--output-format', 'json'],
-      }),
-    );
+    expect(result.metadata).toEqual(expect.objectContaining({ style: 'creative', session_id: 'g-session-1' }));
+    const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
+    expect(call.args[1]).toContain('CURRENT_QUESTION: 设计一个登录页面');
+    expect(call.args[1]).toContain('语义相关历史');
+    expect(call.args[1]).toContain('品牌风格：简洁明亮');
   });
 
   it('shouldRespond 命中 @Gemini', async () => {

@@ -1,13 +1,11 @@
 import { ConfigService } from '@nestjs/config';
 import { CodexAdapter } from './codex.adapter';
 import { CliRunnerService } from '../services/cli-runner.service';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
 
 describe('CodexAdapter', () => {
   let adapter: CodexAdapter;
   let cliRunner: { run: jest.Mock };
-  let configService: { getOrThrow: jest.Mock };
-  let sharedMemoryService: { getAgentThreadBinding: jest.Mock; setAgentThreadBinding: jest.Mock };
+  let configService: { getOrThrow: jest.Mock; get: jest.Mock };
 
   beforeEach(() => {
     cliRunner = { run: jest.fn() };
@@ -19,29 +17,34 @@ describe('CodexAdapter', () => {
         };
         return values[key];
       }),
-    };
-    sharedMemoryService = {
-      getAgentThreadBinding: jest.fn().mockResolvedValue(null),
-      setAgentThreadBinding: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockReturnValue(undefined),
     };
 
-    adapter = new CodexAdapter(
-      cliRunner as unknown as CliRunnerService,
-      configService as unknown as ConfigService,
-      sharedMemoryService as unknown as SharedMemoryService,
-    );
+    adapter = new CodexAdapter(cliRunner as unknown as CliRunnerService, configService as unknown as ConfigService);
   });
 
   it('generate 应解析 CLI 输出', async () => {
+    const context = {
+      sessionId: 's1',
+      semanticContext: [{ id: 'v1', content: '历史代码规范', similarity: 0.88 }],
+      summaries: ['之前约定：优先补齐测试'],
+      conversationHistory: [
+        { id: 'm1', sessionId: 's1', role: 'assistant' as const, content: '请先补测试', agentId: 'claude-001' },
+      ],
+    };
     cliRunner.run.mockResolvedValue({
       stdout: '{"content":"codex result","tokens":123}',
       stderr: '',
       exitCode: 0,
     });
 
-    const result = await adapter.generate('please review', { sessionId: 's1' });
+    const result = await adapter.generate('please review', context);
     expect(result.content).toBe('codex result');
     expect(result.metadata).toEqual(expect.objectContaining({ tokens: 123 }));
+    const call = cliRunner.run.mock.calls[0][0] as { input: string };
+    expect(call.input).toContain('CURRENT_QUESTION: please review');
+    expect(call.input).toContain('语义相关历史');
+    expect(call.input).toContain('历史代码规范');
   });
 
   it('shouldRespond 命中 @Codex', async () => {

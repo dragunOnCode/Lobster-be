@@ -61,20 +61,4 @@ describe('SharedMemoryService', () => {
     const decision = await service.getDecision('s1', 'claude-001');
     expect(decision?.agentId).toBe('claude-001');
   });
-
-  it('应写入并读取 agent thread 绑定', async () => {
-    await service.setAgentThreadBinding('s1', 'codex-001', 'thread-abc');
-    expect(redis.set).toHaveBeenCalledWith('memory:shared:thread:s1:codex-001', expect.any(String), 'EX', 3600);
-
-    redis.get.mockResolvedValueOnce(
-      JSON.stringify({
-        sessionId: 's1',
-        agentId: 'codex-001',
-        threadId: 'thread-abc',
-        updatedAt: '2026-01-01T00:00:00.000Z',
-      }),
-    );
-    const binding = await service.getAgentThreadBinding('s1', 'codex-001');
-    expect(binding?.threadId).toBe('thread-abc');
-  });
 });

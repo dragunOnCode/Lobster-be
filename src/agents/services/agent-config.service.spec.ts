@@ -1,11 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { AgentConfigService } from './agent-config.service';
 import { AgentService } from './agent.service';
 import { CliRunnerService } from './cli-runner.service';
-import { ContextBuilderService } from './context-builder.service';
-import { SharedMemoryService } from '../../memory/services/shared-memory.service';
+import { PromptContextBuilderService } from './prompt-context-builder.service';
 import { AgentConfigEntry, AgentsConfig } from '../interfaces';
 import * as fs from 'fs/promises';
 
@@ -17,12 +15,10 @@ const mockAgentService = {
   getRegisteredAgentIds: jest.fn().mockReturnValue([]),
 };
 
-const mockHttpService = {};
 const mockCliRunner = {};
-const mockContextBuilder = { buildContext: jest.fn() };
-const mockSharedMemoryService = {
-  getAgentThreadBinding: jest.fn(),
-  setAgentThreadBinding: jest.fn(),
+const mockPromptContextBuilder = {
+  buildUserPrompt: jest.fn((prompt: string) => prompt),
+  buildCliPrompt: jest.fn().mockReturnValue('CURRENT_QUESTION: test'),
 };
 const mockConfigService = {
   get: jest.fn().mockReturnValue('mock'),
@@ -66,10 +62,8 @@ describe('AgentConfigService', () => {
       providers: [
         AgentConfigService,
         { provide: AgentService, useValue: mockAgentService },
-        { provide: HttpService, useValue: mockHttpService },
         { provide: CliRunnerService, useValue: mockCliRunner },
-        { provide: ContextBuilderService, useValue: mockContextBuilder },
-        { provide: SharedMemoryService, useValue: mockSharedMemoryService },
+        { provide: PromptContextBuilderService, useValue: mockPromptContextBuilder },
         { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
