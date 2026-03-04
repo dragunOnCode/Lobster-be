@@ -9,3 +9,4 @@ Frontend/tsconfig.app.tsbuildinfo
 .claude
 .codex
 .gemini
+.playwright-mcp

@@ -31,22 +31,35 @@
     <div class="agent-list-scroll">
       <TransitionGroup name="agent-list">
         <div
-          v-for="(sessionId, index) in chat.sessionHistory"
-          :key="sessionId"
+          v-for="(sessionInfo, index) in chat.sessionHistory"
+          :key="sessionInfo.id"
           class="agent-item"
-          :class="{ active: chat.config.sessionId === sessionId }"
+          :class="{ active: chat.config.sessionId === sessionInfo.id }"
           :style="{ animationDelay: `${index * 0.05}s` }"
-          @click="chat.changeSession(sessionId)"
+          @click="chat.changeSession(sessionInfo.id)"
         >
           <div class="avatar-wrapper">
             <a-avatar :size="42" class="agent-avatar">
               <template #icon><icon-history /></template>
-              <div class="status-dot" :class="{ online: chat.config.sessionId === sessionId }"></div>
+              <div class="status-dot" :class="{ online: chat.config.sessionId === sessionInfo.id }"></div>
             </a-avatar>
           </div>
           <div class="agent-info">
-            <div class="agent-header">
-              <span class="agent-name">{{ sessionId }}</span>
+            <div class="agent-header" v-if="editingSessionId !== sessionInfo.id">
+              <span class="agent-name">{{ sessionInfo.title || sessionInfo.id }}</span>
+              <button class="edit-btn" @click.stop="startEdit(sessionInfo.id, sessionInfo.title)">
+                <icon-edit />
+              </button>
+            </div>
+            <div class="agent-header" v-else>
+              <a-input
+                size="small"
+                v-model="editTitle"
+                @press-enter="finishEdit"
+                @blur="finishEdit"
+                @click.stop
+                auto-focus
+              />
             </div>
             <div class="agent-preview">
               Conversation history...
@@ -75,13 +88,15 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue';
 import {
   IconSearch,
   IconMenuFold,
   IconMenuUnfold,
   IconHistory,
   IconPlus,
-  IconMessage
+  IconMessage,
+  IconEdit
 } from '@arco-design/web-vue/es/icon';
 import { useChatStore } from '../stores/chat';
 
@@ -94,6 +109,21 @@ defineEmits<{
 }>();
 
 const chat = useChatStore();
+
+const editingSessionId = ref<string | null>(null);
+const editTitle = ref('');
+
+function startEdit(id: string, currentTitle: string) {
+  editingSessionId.value = id;
+  editTitle.value = currentTitle || id;
+}
+
+function finishEdit() {
+  if (editingSessionId.value && editTitle.value.trim()) {
+    chat.renameSession(editingSessionId.value, editTitle.value.trim());
+  }
+  editingSessionId.value = null;
+}
 </script>
 
 <style scoped>
@@ -312,6 +342,33 @@ const chat = useChatStore();
 .agent-name {
   font-weight: 500;
   font-size: 15px;
+  color: var(--text-main);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  opacity: 0;
+}
+
+.agent-item:hover .edit-btn {
+  opacity: 1;
+}
+
+.edit-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
   color: var(--text-main);
 }
 

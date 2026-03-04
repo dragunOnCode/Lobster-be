@@ -1,14 +1,23 @@
 <template>
   <div class="glass-container">
-    <!-- Sidebar / Agent List -->
-    <aside class="sidebar" :class="{ collapsed: shouldCollapse }">
-      <AgentStatusBar :collapsed="shouldCollapse" @toggle="toggleSidebar" />
-    </aside>
+    <!-- Full-screen Welcome (before entering chat mode) -->
+    <template v-if="!chat.enteredChatMode">
+      <WelcomeGlass class="full-welcome" @start="chat.enterChatMode()" />
+    </template>
 
-    <!-- Main Chat Area -->
-    <main class="chat-main">
-      <ChatPanel @open-debug="showDebug = true" />
-    </main>
+    <!-- Chat Interface (after entering chat mode) -->
+    <template v-else>
+      <!-- Sidebar / Agent List -->
+      <aside class="sidebar" :class="{ collapsed: shouldCollapse }">
+        <AgentStatusBar :collapsed="shouldCollapse" @toggle="toggleSidebar" />
+      </aside>
+
+      <!-- Main Chat Area -->
+      <main class="chat-main">
+        <WelcomeGlass v-if="!chat.config.sessionId" @start="chat.createNewSession()" />
+        <ChatPanel v-else @open-debug="showDebug = true" />
+      </main>
+    </template>
 
     <!-- Debug Drawers -->
     <a-drawer
@@ -34,6 +43,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import AgentStatusBar from './components/AgentStatusBar.vue';
 import ChatPanel from './components/ChatPanel.vue';
+import WelcomeGlass from './components/WelcomeGlass.vue';
 import ConnectionPanel from './components/ConnectionPanel.vue';
 import EventPanel from './components/EventPanel.vue';
 import { useChatStore } from './stores/chat';
@@ -74,6 +84,18 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.glass-container {
+  display: flex;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.full-welcome {
+  width: 100%;
+  height: 100%;
+}
+
 .sidebar {
   width: 300px;
   min-width: 300px;

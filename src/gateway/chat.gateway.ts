@@ -21,6 +21,11 @@ interface SendMessagePayload {
   sessionId: string;
 }
 
+interface RenameSessionPayload {
+  sessionId: string;
+  title: string;
+}
+
 @UseFilters(new WsExceptionFilter())
 @WebSocketGateway({
   namespace: '/chat',
@@ -172,6 +177,23 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.error(`langgraph response failed, session=${sessionId}, reason=${reason}`);
     }
 
+    return { ok: true };
+  }
+
+  @SubscribeMessage('session:rename')
+  async handleRenameSession(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: RenameSessionPayload,
+  ): Promise<{ ok: boolean }> {
+    if (!payload?.sessionId?.trim() || !payload?.title?.trim()) {
+      client.emit('message:error', { message: 'sessionId 鍜?title 涓嶈兘涓虹┖' });
+      return { ok: false };
+    }
+    
+    await this.chatService.renameSession(payload.sessionId.trim(), payload.title.trim());
+    
+    const sessions = await this.chatService.listSessions();
+    this.sessionManager.broadcastToAll('session:list', sessions);
     return { ok: true };
   }
 

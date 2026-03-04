@@ -3,14 +3,11 @@
     <!-- Chat Header -->
     <header class="chat-header">
       <div class="header-left">
-        <a-avatar :size="40" class="header-avatar">
-          <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Jiame" alt="active" />
-        </a-avatar>
         <div class="header-info">
-          <span class="header-name">{{ chat.config.sessionId }}</span>
+          <span class="header-name">{{ currentSessionTitle }}</span>
           <span class="header-status">
             <span class="status-indicator"></span>
-            {{ chat.connectionStatus === 'connected' ? 'Online' : 'Connecting...' }}
+            {{ chat.connectionStatus === 'connected' ? 'Connected' : 'Connecting...' }}
           </span>
         </div>
       </div>
@@ -55,11 +52,7 @@
 
       <!-- Streaming Drafts -->
       <TransitionGroup name="message">
-        <div
-          v-for="item in streamDrafts"
-          :key="item.key"
-          class="message-wrapper assistant streaming"
-        >
+        <div v-for="item in streamDrafts" :key="item.key" class="message-wrapper assistant streaming">
           <div class="message-label">Received</div>
           <div class="message-content-box">
             <div class="message-avatar">
@@ -77,11 +70,7 @@
 
       <!-- Scroll to bottom button -->
       <Transition name="fade">
-        <button
-          v-show="showScrollBtn"
-          class="scroll-bottom-btn"
-          @click="scrollToBottom(true)"
-        >
+        <button v-show="showScrollBtn" class="scroll-bottom-btn" @click="scrollToBottom(true)">
           <icon-down />
         </button>
       </Transition>
@@ -109,11 +98,7 @@
               <icon-attachment />
             </button>
           </a-tooltip>
-          <button
-            class="glass-send-btn"
-            :class="{ ready: draft.trim().length > 0 }"
-            @click="handleSend"
-          >
+          <button class="glass-send-btn" :class="{ ready: draft.trim().length > 0 }" @click="handleSend">
             <span class="send-text">Send</span>
             <icon-arrow-right class="send-icon" />
           </button>
@@ -133,11 +118,17 @@ import {
   IconArrowRight,
   IconFaceSmileFill,
   IconAttachment,
-  IconDown
+  IconDown,
 } from '@arco-design/web-vue/es/icon';
 import { useChatStore } from '../stores/chat';
 
 const chat = useChatStore();
+
+const currentSessionTitle = computed(() => {
+  const session = chat.sessionHistory.find((s) => s.id === chat.config.sessionId);
+  return session?.title || chat.config.sessionId;
+});
+
 const draft = ref('');
 const scrollContainer = ref<HTMLElement | null>(null);
 const inputFocused = ref(false);
@@ -185,7 +176,7 @@ function scrollToBottom(smooth: boolean = false) {
     isAutoScrolling.value = true;
     scrollContainer.value.scrollTo({
       top: scrollContainer.value.scrollHeight,
-      behavior: smooth ? 'smooth' : 'auto'
+      behavior: smooth ? 'smooth' : 'auto',
     });
     setTimeout(() => {
       isAutoScrolling.value = false;
@@ -213,11 +204,15 @@ onUpdated(() => {
   });
 });
 
-watch(streamDrafts, () => {
-  nextTick(() => {
-    scrollToBottom();
-  });
-}, { deep: true });
+watch(
+  streamDrafts,
+  () => {
+    nextTick(() => {
+      scrollToBottom();
+    });
+  },
+  { deep: true },
+);
 
 defineEmits(['open-debug']);
 </script>
@@ -385,7 +380,9 @@ defineEmits(['open-debug']);
   border-radius: 18px;
   font-size: 15px;
   line-height: 1.55;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .bubble:hover {
@@ -457,8 +454,13 @@ defineEmits(['open-debug']);
 }
 
 @keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
 /* Scroll to bottom button */
@@ -494,7 +496,9 @@ defineEmits(['open-debug']);
 /* Fade transition */
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
 }
 
 .fade-enter-from,

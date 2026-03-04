@@ -58,18 +58,24 @@ function getDefaultBaseUrl(): string {
   return normalizeBaseUrl(origin);
 }
 
+export interface SessionInfo {
+  id: string;
+  title: string;
+}
+
 export const useChatStore = defineStore('chat', () => {
   const config = ref<ConnectionConfig>({
     baseUrl: getDefaultBaseUrl(),
     namespace: '/chat',
-    sessionId: 'demo-session',
+    sessionId: '',
     userId: 'demo-user',
     token: '',
   });
   const connectionStatus = ref<ConnectionStatus>('disconnected');
   const connectionError = ref('');
   const messages = ref<ChatMessage[]>([]);
-  const sessionHistory = ref<string[]>([]);
+  const sessionHistory = ref<SessionInfo[]>([]);
+  const enteredChatMode = ref(false);
   const debugEvents = ref<DebugEvent[]>([]);
   const eventKeyword = ref('');
   const eventTypeFilter = ref('all');
@@ -121,6 +127,29 @@ export const useChatStore = defineStore('chat', () => {
   function createNewSession() {
     const newSessionId = crypto.randomUUID();
     changeSession(newSessionId);
+  }
+
+  function enterChatMode() {
+    enteredChatMode.value = true;
+    // If there's history, select the latest (first) session
+    if (sessionHistory.value.length > 0) {
+      const latestSession = sessionHistory.value[0];
+      changeSession(latestSession.id);
+    } else {
+      // No history, create a new session
+      createNewSession();
+    }
+  }
+
+  function renameSession(sessionId: string, title: string) {
+    // Update local state immediately for instant UI feedback
+    const idx = sessionHistory.value.findIndex((s) => s.id === sessionId);
+    if (idx >= 0) {
+      sessionHistory.value[idx] = { ...sessionHistory.value[idx], title };
+    }
+    // Sync to backend
+    if (!socketRef || !socketRef.connected) return;
+    socketRef.emit('session:rename', { sessionId, title });
   }
 
   function pushDebugEvent(event: Omit<DebugEvent, 'id' | 'timestamp'>) {
@@ -216,7 +245,7 @@ export const useChatStore = defineStore('chat', () => {
       streamBuffer.value = {};
     });
 
-    socketRef.on('session:list', (sessions: string[]) => {
+    socketRef.on('session:list', (sessions: SessionInfo[]) => {
       sessionHistory.value = sessions ?? [];
     });
 
@@ -356,6 +385,7 @@ export const useChatStore = defineStore('chat', () => {
     connectionError,
     messages,
     sessionHistory,
+    enteredChatMode,
     debugEvents,
     filteredEvents,
     eventKeyword,
@@ -366,6 +396,8 @@ export const useChatStore = defineStore('chat', () => {
     updateConfig,
     changeSession,
     createNewSession,
+    enterChatMode,
+    renameSession,
     connect,
     disconnect,
     sendMessage,

@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { MessageEntity, SessionEntity } from '../database/entities';
 import { MemoryMessage, ShortTermMemoryService } from '../memory/services/short-term-memory.service';
 import { ChromaService } from '../vector/services/chroma.service';
-import { WorkspaceService } from '../workspace/workspace.service';
+import { WorkspaceService, SessionInfo } from '../workspace/workspace.service';
 import { ConversationSummaryService } from './conversation-summary.service';
 
 export interface ChatMessage {
@@ -152,11 +152,20 @@ export class ChatService {
     return [];
   }
 
-  async listSessions(): Promise<string[]> {
+  async listSessions(): Promise<SessionInfo[]> {
     if (this.workspaceService) {
       return this.workspaceService.listSessions();
     }
-    return Array.from(this.messages.keys());
+    return Array.from(this.messages.keys()).map(id => ({ id, title: id }));
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    if (this.workspaceService) {
+      await this.workspaceService.renameSession(sessionId, title);
+    }
+    if (this.isUuid(sessionId) && this.sessionRepo) {
+      await this.sessionRepo.update({ id: sessionId }, { title });
+    }
   }
 
   async replaceSessionMessages(sessionId: string, messages: ChatMessage[]): Promise<void> {

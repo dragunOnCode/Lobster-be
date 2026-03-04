@@ -9,6 +9,11 @@ export interface TranscriptEvent {
   [key: string]: unknown;
 }
 
+export interface SessionInfo {
+  id: string;
+  title: string;
+}
+
 @Injectable()
 export class WorkspaceService implements OnModuleInit {
   private readonly workspaceRoot: string;
@@ -37,6 +42,7 @@ export class WorkspaceService implements OnModuleInit {
     if (!metadataExists) {
       const metadata = {
         sessionId,
+        title: sessionId,
         createdAt: new Date().toISOString(),
         version: '1.0.0',
         agents: [],
@@ -55,14 +61,53 @@ export class WorkspaceService implements OnModuleInit {
     }
   }
 
-  async listSessions(): Promise<string[]> {
+  async listSessions(): Promise<SessionInfo[]> {
     try {
       const entries = await fs.readdir(this.workspaceRoot, { withFileTypes: true });
-      return entries
+      const sessionIds = entries
         .filter((entry) => entry.isDirectory() && !entry.name.startsWith('_') && entry.name !== '.gitkeep')
         .map((entry) => entry.name);
+
+      const sessions: SessionInfo[] = [];
+      for (const id of sessionIds) {
+        const metadataPath = path.join(this.getSessionRoot(id), 'metadata.json');
+        let title = id;
+        try {
+          if (await this.fileExists(metadataPath)) {
+            const content = await fs.readFile(metadataPath, 'utf-8');
+            const metadata = JSON.parse(content);
+            if (metadata.title) {
+              title = metadata.title;
+            }
+          }
+        } catch (e) {
+          // fallback to id
+        }
+        sessions.push({ id, title });
+      }
+      return sessions;
     } catch (error) {
       return [];
+    }
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    const metadataPath = path.join(this.getSessionRoot(sessionId), 'metadata.json');
+    if (await this.fileExists(metadataPath)) {
+      const content = await fs.readFile(metadataPath, 'utf-8');
+      const metadata = JSON.parse(content);
+      metadata.title = title;
+      await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
+    } else {
+      const metadata = {
+        sessionId,
+        title,
+        createdAt: new Date().toISOString(),
+        version: '1.0.0',
+        agents: [],
+        fileCount: 0,
+      };
+      await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
     }
   }
 
