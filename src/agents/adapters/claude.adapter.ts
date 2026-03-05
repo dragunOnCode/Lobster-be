@@ -1,6 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AgentContext, AgentResponse, AgentStatus, DecisionResult, ILLMAdapter, Message, SemanticContextItem } from '../interfaces';
+import {
+  AgentContext,
+  AgentResponse,
+  AgentStatus,
+  DecisionResult,
+  ILLMAdapter,
+  Message,
+  SemanticContextItem,
+} from '../interfaces';
 import { CliExitError, CliNotFoundError, CliRunnerService, TimeoutError } from '../services/cli-runner.service';
 import { PromptContextBuilderService } from '../services/prompt-context-builder.service';
 
@@ -41,6 +49,7 @@ export class ClaudeAdapter implements ILLMAdapter {
       this.logger.log(
         `Invoke Claude CLI session=${context.sessionId} timeoutMs=${invocation.timeoutMs} promptChars=${invocation.cliPrompt.length} contextChars=${invocation.promptBuilt?.metrics.contextChars ?? invocation.cliPrompt.length} contextEstimatedTokens=${invocation.promptBuilt?.metrics.contextEstimatedTokens ?? Math.ceil(invocation.cliPrompt.length / 4)} historyItems=${invocation.promptBuilt?.metrics.historyItems ?? 'n/a'} semanticItems=${invocation.promptBuilt?.metrics.semanticItems ?? 'n/a'} summaryItems=${invocation.promptBuilt?.metrics.summaryItems ?? 'n/a'} trimmedItems=${invocation.promptBuilt?.metrics.trimmedItems ?? 'n/a'}`,
       );
+      this.logger.debug(`claude cliprompt = ${invocation.cliPrompt}`);
       const result = await this.runClaude(invocation.cliPath, invocation.cliPrompt, invocation.timeoutMs);
       this.logger.log(
         `Claude CLI completed in ${Date.now() - invokeAt}ms exitCode=${result.exitCode} stdoutChars=${result.stdout.length} stderrChars=${result.stderr.length}`,
@@ -326,7 +335,11 @@ export class ClaudeAdapter implements ILLMAdapter {
     return Math.ceil(message.content.length / 4) + 6;
   }
 
-  private buildCliPrompt(userPrompt: string, semanticReferenceBlock: string, conversationReferenceBlock: string): string {
+  private buildCliPrompt(
+    userPrompt: string,
+    semanticReferenceBlock: string,
+    conversationReferenceBlock: string,
+  ): string {
     const cleanQuestion = userPrompt.trim();
     return [
       `CURRENT_QUESTION: ${cleanQuestion}`,
@@ -355,7 +368,10 @@ export class ClaudeAdapter implements ILLMAdapter {
 
     const normalizedCurrent = this.normalizeForDedup(currentUserPrompt);
     const safeLimit = Number.isFinite(historyLimit) && historyLimit > 0 ? Math.floor(historyLimit) : 12;
-    const maxChars = Math.max(1200, Math.floor((Number.isFinite(contextTokenBudget) ? contextTokenBudget : 12000) * 2.5));
+    const maxChars = Math.max(
+      1200,
+      Math.floor((Number.isFinite(contextTokenBudget) ? contextTokenBudget : 12000) * 2.5),
+    );
     const selected: string[] = [];
     let usedChars = 0;
 
@@ -444,7 +460,10 @@ export class ClaudeAdapter implements ILLMAdapter {
     });
   }
 
-  private buildInvocation(prompt: string, context: AgentContext): {
+  private buildInvocation(
+    prompt: string,
+    context: AgentContext,
+  ): {
     cliPath: string;
     timeoutMs: number;
     cliPrompt: string;
@@ -477,6 +496,8 @@ export class ClaudeAdapter implements ILLMAdapter {
           contextTokenBudget,
         ),
       );
+
+    this.logger.debug(`[claude] cliprompt = ${cliPrompt}`);
 
     return {
       cliPath,

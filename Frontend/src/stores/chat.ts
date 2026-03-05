@@ -27,6 +27,7 @@ interface StreamEndPayload {
 }
 
 const MAX_EVENTS = 1000;
+const ENTRY_SESSION_WAIT_TIMEOUT_MS = 6000;
 const DEFAULT_AGENTS = [
   { agentId: 'claude-001', agentName: 'Claude' },
   { agentId: 'codex-001', agentName: 'Codex' },
@@ -34,6 +35,7 @@ const DEFAULT_AGENTS = [
 ];
 
 let socketRef: Socket | null = null;
+let entrySessionTimer: ReturnType<typeof setTimeout> | null = null;
 
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, '');
@@ -76,6 +78,10 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([]);
   const sessionHistory = ref<SessionInfo[]>([]);
   const enteredChatMode = ref(false);
+  const isEnteringChatMode = ref(false);
+  const pendingEntrySessionId = ref('');
+  const sessionListLoaded = ref(false);
+  const hasResolvedEntrySession = ref(false);
   const debugEvents = ref<DebugEvent[]>([]);
   const eventKeyword = ref('');
   const eventTypeFilter = ref('all');
@@ -127,18 +133,73 @@ export const useChatStore = defineStore('chat', () => {
   function createNewSession() {
     const newSessionId = crypto.randomUUID();
     changeSession(newSessionId);
+    return newSessionId;
+  }
+
+  function clearEntrySessionTimer() {
+    if (!entrySessionTimer) {
+      return;
+    }
+    clearTimeout(entrySessionTimer);
+    entrySessionTimer = null;
+  }
+
+  function startEntrySessionTimer() {
+    clearEntrySessionTimer();
+    entrySessionTimer = setTimeout(() => {
+      if (!isEnteringChatMode.value || hasResolvedEntrySession.value) {
+        return;
+      }
+      const fallbackSessionId = pendingEntrySessionId.value || config.value.sessionId || crypto.randomUUID();
+      finalizeEnterChatMode(fallbackSessionId);
+    }, ENTRY_SESSION_WAIT_TIMEOUT_MS);
+  }
+
+  function finalizeEnterChatMode(sessionId: string) {
+    if (!sessionId) {
+      return;
+    }
+    clearEntrySessionTimer();
+    hasResolvedEntrySession.value = true;
+    pendingEntrySessionId.value = '';
+    if (config.value.sessionId !== sessionId) {
+      changeSession(sessionId);
+    }
+    enteredChatMode.value = true;
+    isEnteringChatMode.value = false;
+  }
+
+  function resolveInitialSessionOnEnter() {
+    if (!isEnteringChatMode.value || hasResolvedEntrySession.value) {
+      return;
+    }
+
+    if (sessionHistory.value.length > 0) {
+      finalizeEnterChatMode(sessionHistory.value[0].id);
+      return;
+    }
+
+    if (sessionListLoaded.value) {
+      const newSessionId = pendingEntrySessionId.value || config.value.sessionId || crypto.randomUUID();
+      finalizeEnterChatMode(newSessionId);
+    }
   }
 
   function enterChatMode() {
-    enteredChatMode.value = true;
-    // If there's history, select the latest (first) session
-    if (sessionHistory.value.length > 0) {
-      const latestSession = sessionHistory.value[0];
-      changeSession(latestSession.id);
-    } else {
-      // No history, create a new session
-      createNewSession();
+    if (enteredChatMode.value || isEnteringChatMode.value) {
+      return;
     }
+    const bootstrapSessionId = crypto.randomUUID();
+    pendingEntrySessionId.value = bootstrapSessionId;
+    isEnteringChatMode.value = true;
+    sessionListLoaded.value = false;
+    hasResolvedEntrySession.value = false;
+    updateConfig({ sessionId: bootstrapSessionId });
+    messages.value = [];
+    streamBuffer.value = {};
+    connect(true);
+    startEntrySessionTimer();
+    resolveInitialSessionOnEnter();
   }
 
   function renameSession(sessionId: string, title: string) {
@@ -247,6 +308,8 @@ export const useChatStore = defineStore('chat', () => {
 
     socketRef.on('session:list', (sessions: SessionInfo[]) => {
       sessionHistory.value = sessions ?? [];
+      sessionListLoaded.value = true;
+      resolveInitialSessionOnEnter();
     });
 
     socketRef.on('message:received', (message: ChatMessage) => {
@@ -307,6 +370,12 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function connect(forceReconnect = false) {
+    const sessionId = config.value.sessionId?.trim();
+    if (!sessionId) {
+      connectionStatus.value = 'disconnected';
+      return;
+    }
+
     if (socketRef?.connected && !forceReconnect) {
       return;
     }
@@ -323,7 +392,7 @@ export const useChatStore = defineStore('chat', () => {
       transports: ['websocket'],
       reconnection: true,
       query: {
-        sessionId: config.value.sessionId,
+        sessionId,
         userId: config.value.userId,
       },
       auth: config.value.token ? { token: config.value.token } : undefined,
@@ -333,6 +402,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function disconnect() {
+    clearEntrySessionTimer();
+    isEnteringChatMode.value = false;
     if (!socketRef) {
       return;
     }
@@ -386,6 +457,7 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     sessionHistory,
     enteredChatMode,
+    isEnteringChatMode,
     debugEvents,
     filteredEvents,
     eventKeyword,

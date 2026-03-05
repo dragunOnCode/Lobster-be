@@ -1,8 +1,28 @@
 <template>
   <div class="glass-container">
     <!-- Full-screen Welcome (before entering chat mode) -->
-    <template v-if="!chat.enteredChatMode">
+    <template v-if="!chat.enteredChatMode && !chat.isEnteringChatMode">
       <WelcomeGlass class="full-welcome" @start="chat.enterChatMode()" />
+    </template>
+
+    <!-- Entering Chat Loading -->
+    <template v-else-if="chat.isEnteringChatMode">
+      <section class="entering-screen">
+        <div class="entering-card">
+          <h2 class="entering-title">Preparing your chat...</h2>
+          <p class="entering-subtitle">Loading recent sessions and opening the latest conversation</p>
+          <div class="dialog-scroll" aria-live="polite">
+            <div class="dialog-track">
+              <div v-for="(line, index) in loadingDialogs" :key="`line-a-${index}`" class="dialog-line">
+                {{ line }}
+              </div>
+              <div v-for="(line, index) in loadingDialogs" :key="`line-b-${index}`" class="dialog-line">
+                {{ line }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </template>
 
     <!-- Chat Interface (after entering chat mode) -->
@@ -14,8 +34,10 @@
 
       <!-- Main Chat Area -->
       <main class="chat-main">
-        <WelcomeGlass v-if="!chat.config.sessionId" @start="chat.createNewSession()" />
-        <ChatPanel v-else @open-debug="showDebug = true" />
+        <ChatPanel v-if="chat.config.sessionId" @open-debug="showDebug = true" />
+        <div v-else class="chat-inline-loading">
+          Waiting for session...
+        </div>
       </main>
     </template>
 
@@ -52,6 +74,12 @@ const showDebug = ref(false);
 const sidebarCollapsed = ref(false);
 const isMobile = ref(false);
 const chat = useChatStore();
+const loadingDialogs = [
+  'Connecting to chat gateway...',
+  'Fetching conversation sessions...',
+  'Selecting the latest session...',
+  'Loading message history...',
+];
 
 // Check if we're on mobile viewport
 const checkMobile = () => {
@@ -96,6 +124,75 @@ onUnmounted(() => {
   height: 100%;
 }
 
+.entering-screen {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(135deg, #f0f7ff 0%, #f7f4ff 48%, #eef7ff 100%);
+}
+
+.entering-card {
+  width: min(520px, 100%);
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 24px;
+  box-shadow: 0 14px 42px rgba(79, 172, 254, 0.15);
+  padding: 26px 24px;
+  backdrop-filter: blur(16px);
+}
+
+.entering-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.entering-subtitle {
+  margin: 8px 0 16px;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.dialog-scroll {
+  height: 140px;
+  overflow: hidden;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.dialog-track {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  animation: scroll-dialog 5s linear infinite;
+}
+
+.dialog-line {
+  align-self: flex-start;
+  max-width: 90%;
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 12px 12px 12px 4px;
+  padding: 8px 12px;
+  color: #334155;
+  font-size: 13px;
+}
+
+@keyframes scroll-dialog {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-50%);
+  }
+}
+
 .sidebar {
   width: 300px;
   min-width: 300px;
@@ -121,6 +218,15 @@ onUnmounted(() => {
   flex-direction: column;
   background: transparent;
   overflow: hidden;
+}
+
+.chat-inline-loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  font-size: 14px;
 }
 
 /* Medium screens - reduce sidebar width but keep visible */

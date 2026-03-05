@@ -44,8 +44,10 @@ export class CodexAdapter implements ILLMAdapter {
         tokenBudget,
         lineMaxChars,
       });
-      const cliPrompt = promptBuilt?.prompt ?? this.buildCliPrompt(userPrompt, this.buildContextReferenceBlock(enhancedContext, userPrompt));
-
+      const cliPrompt =
+        promptBuilt?.prompt ??
+        this.buildCliPrompt(userPrompt, this.buildContextReferenceBlock(enhancedContext, userPrompt));
+      this.logger.debug(`codex cliprompt = ${cliPrompt}`);
       this.logger.log(
         `generate session=${enhancedContext.sessionId} contextChars=${promptBuilt?.metrics.contextChars ?? cliPrompt.length} contextEstimatedTokens=${promptBuilt?.metrics.contextEstimatedTokens ?? Math.ceil(cliPrompt.length / 4)} historyItems=${promptBuilt?.metrics.historyItems ?? 'n/a'} semanticItems=${promptBuilt?.metrics.semanticItems ?? 'n/a'} summaryItems=${promptBuilt?.metrics.summaryItems ?? 'n/a'} trimmedItems=${promptBuilt?.metrics.trimmedItems ?? 'n/a'}`,
       );
@@ -160,9 +162,7 @@ export class CodexAdapter implements ILLMAdapter {
     prompt: string,
     timeoutMs: number,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    this.logger.log(
-      `runCodex: ${cliPath}, args: ${['exec', '--json', '-']}, timeout: ${timeoutMs}, input: ${prompt}`,
-    );
+    this.logger.log(`runCodex: ${cliPath}, args: ${['exec', '--json', '-']}, timeout: ${timeoutMs}, input: ${prompt}`);
     return this.cliRunner.run({
       command: cliPath,
       args: ['exec', '--json', '-'],
@@ -213,7 +213,9 @@ export class CodexAdapter implements ILLMAdapter {
       sections.push('语义相关历史:\n' + semanticLines.join('\n'));
     }
 
-    const summaries = (context.summaries ?? []).slice(0, 2).map((item, index) => `${index + 1}. ${this.truncate(item, 220)}`);
+    const summaries = (context.summaries ?? [])
+      .slice(0, 2)
+      .map((item, index) => `${index + 1}. ${this.truncate(item, 220)}`);
     if (summaries.length > 0) {
       sections.push('历史摘要:\n' + summaries.join('\n'));
     }
