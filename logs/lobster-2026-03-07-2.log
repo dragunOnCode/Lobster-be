@@ -1,0 +1,34 @@
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] BullModule dependencies initialized
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] TypeOrmModule dependencies initialized
+2026-03-07T05:47:32.717Z LOG [WebSocketsController] [web-sockets-controller.js:130] ChatGateway subscribed to the "session:rename" message
+2026-03-07T05:47:32.715Z LOG [InstanceLoader] [instance-loader.js:45] VectorModule dependencies initialized
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] TypeOrmModule dependencies initialized
+2026-03-07T05:47:32.718Z LOG [RedisHealthService] [redis-health.service.ts:17] Redis connection verified by ping/pong
+2026-03-07T05:47:32.718Z LOG [RoutesResolver] [routes-resolver.js:51] AppController {/}:
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] MemoryModule dependencies initialized
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] ChatModule dependencies initialized
+2026-03-07T05:47:32.718Z LOG [RouterExplorer] [router-explorer.js:118] Mapped {/, GET} route
+2026-03-07T05:47:32.720Z LOG [ChromaService] [chroma.service.ts:53] ChromaDB connected: http://localhost:8000
+2026-03-07T05:47:32.718Z LOG [RoutesResolver] [routes-resolver.js:51] LangGraphThreadsController {/langgraph/threads}:
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] WorkspaceModule dependencies initialized
+2026-03-07T05:47:32.720Z LOG [AgentConfigService] [agent-config.service.ts:91] Loaded 3 enabled agents from config
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] TasksModule dependencies initialized
+2026-03-07T05:47:32.718Z LOG [RouterExplorer] [router-explorer.js:118] Mapped {/langgraph/threads/:threadId/state, GET} route
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] BullModule dependencies initialized
+2026-03-07T05:47:32.720Z LOG [ConfigWatcherService] [config-watcher.service.ts:50] Watching config directory: F:\AIProject\Lobster-be\config
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] LangGraphModule dependencies initialized
+2026-03-07T05:47:32.718Z LOG [RouterExplorer] [router-explorer.js:118] Mapped {/langgraph/threads/:threadId/history, GET} route
+2026-03-07T05:47:32.720Z LOG [BackgroundTasksQueue] [background-tasks.queue.ts:13] Background task queue is ready
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] AgentsModule dependencies initialized
+2026-03-07T05:47:32.717Z LOG [InstanceLoader] [instance-loader.js:45] GatewayModule dependencies initialized
+2026-03-07T05:47:32.718Z LOG [RouterExplorer] [router-explorer.js:118] Mapped {/langgraph/threads/:threadId/replay, GET} route
+2026-03-07T05:47:32.720Z LOG [ScheduledTasksProcessor] [scheduled-tasks.processor.ts:81] Cron tasks registered to queue
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] LobsterConfigModule dependencies initialized
+2026-03-07T05:47:32.717Z LOG [WebSocketsController] [web-sockets-controller.js:130] ChatGateway subscribed to the "message:send" message
+2026-03-07T05:47:32.718Z LOG [RouterExplorer] [router-explorer.js:118] Mapped {/langgraph/threads/:threadId/restore, POST} route
+2026-03-07T05:47:32.720Z LOG [NestApplication] [nest-application.js:104] Nest application successfully started
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] TypeOrmCoreModule dependencies initialized
+2026-03-07T05:47:32.717Z LOG [WebSocketsController] [web-sockets-controller.js:130] ChatGateway subscribed to the "message:retry" message
+2026-03-07T05:47:32.720Z LOG [Bootstrap] [main.ts:39] Application listening on port 3002
+2026-03-07T05:47:32.716Z LOG [InstanceLoader] [instance-loader.js:45] TypeOrmModule dependencies initialized
+2026-03-07T05:47:32.720Z LOG [Bootstrap] [main.ts:41] File logging enabled, directory=./logs

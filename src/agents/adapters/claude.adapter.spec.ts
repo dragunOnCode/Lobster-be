@@ -185,4 +185,46 @@ describe('ClaudeAdapter', () => {
     expect(cliPrompt).toContain('CONVERSATION_CONTEXT');
     expect(cliPrompt).toContain('long historical user message');
   });
+
+  it('keeps assistant handoff line when it matches current question', async () => {
+    configService.getOrThrow.mockImplementation((key: string) => {
+      const values: Record<string, string> = {
+        CLAUDE_TIMEOUT_MS: '60000',
+      };
+      return values[key];
+    });
+    configService.get.mockImplementation((key: string) => {
+      if (key === 'CLAUDE_CLI_PATH') {
+        return 'claude';
+      }
+      if (key === 'CLAUDE_CONTEXT_TOKEN_BUDGET') {
+        return '120';
+      }
+      return undefined;
+    });
+    cliRunner.run.mockResolvedValue({
+      stdout: JSON.stringify({ content: 'ok' }),
+      stderr: '',
+      exitCode: 0,
+    });
+
+    await adapter.generate('Please implement this plan', {
+      sessionId: 's1',
+      conversationHistory: [
+        { id: 'u1', sessionId: 's1', role: 'user', content: 'Please implement this plan' },
+        {
+          id: 'a1',
+          sessionId: 's1',
+          role: 'assistant',
+          agentId: 'codex-001',
+          content: 'Please implement this plan',
+        },
+      ],
+    });
+    const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
+    const promptIndex = call.args.findIndex((arg) => arg === '-p');
+    const cliPrompt = call.args[promptIndex + 1];
+    expect(cliPrompt).toContain('ASSISTANT(codex-001): Please implement this plan');
+    expect(cliPrompt).not.toContain('USER: Please implement this plan');
+  });
 });

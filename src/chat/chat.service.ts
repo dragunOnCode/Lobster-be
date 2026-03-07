@@ -152,6 +152,32 @@ export class ChatService {
     return [];
   }
 
+  async getMessage(messageId: string): Promise<ChatMessage | null> {
+    if (this.messageRepo) {
+      const row = await this.messageRepo.findOne({ where: { id: messageId } });
+      if (row) {
+        return {
+          id: row.id,
+          sessionId: row.sessionId,
+          userId: row.userId ?? undefined,
+          agentId: row.agentId ?? undefined,
+          agentName: row.agentName ?? undefined,
+          role: row.role as ChatMessage['role'],
+          content: row.content,
+          mentionedAgents: row.mentionedAgents ?? [],
+          createdAt: row.createdAt,
+        };
+      }
+    }
+
+    for (const msgs of this.messages.values()) {
+      const found = msgs.find((m) => m.id === messageId);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
   async listSessions(): Promise<SessionInfo[]> {
     if (this.workspaceService) {
       return this.workspaceService.listSessions();

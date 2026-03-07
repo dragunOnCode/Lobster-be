@@ -21,6 +21,11 @@ interface SendMessagePayload {
   sessionId: string;
 }
 
+interface RetryMessagePayload {
+  messageId: string;
+  sessionId: string;
+}
+
 interface RenameSessionPayload {
   sessionId: string;
   title: string;
@@ -171,10 +176,64 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const reason = error instanceof Error ? error.message : 'LangGraph agent response failed';
       this.sessionManager.broadcastToSession(sessionId, 'agent:error', {
         sessionId,
+        messageId: userMessage.id,
         error: reason,
         timestamp: new Date().toISOString(),
       });
       this.logger.error(`langgraph response failed, session=${sessionId}, reason=${reason}`);
+    }
+
+    return { ok: true };
+  }
+
+  @SubscribeMessage('message:retry')
+  async handleRetry(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: RetryMessagePayload,
+  ): Promise<{ ok: boolean }> {
+    if (!payload?.messageId?.trim() || !payload?.sessionId?.trim()) {
+      client.emit('message:error', { message: 'messageId 和 sessionId 不能为空' });
+      return { ok: false };
+    }
+
+    const sessionId = payload.sessionId.trim();
+    const userId = this.getQueryValue(client, 'userId') ?? 'anonymous';
+
+    const existingMessage = await this.chatService.getMessage(payload.messageId.trim());
+    if (!existingMessage || existingMessage.role !== 'user') {
+      client.emit('message:error', { message: '找不到对应的用户消息' });
+      return { ok: false };
+    }
+
+    this.logger.log(`retry message=${existingMessage.id}, session=${sessionId}`);
+
+    try {
+      for await (const chunk of this.langGraphOrchestrator.streamTurnFromSavedMessage({
+        id: existingMessage.id,
+        sessionId,
+        role: 'user',
+        content: existingMessage.content,
+        userId,
+        createdAt: existingMessage.createdAt,
+      })) {
+        if (chunk.mode !== 'custom') {
+          continue;
+        }
+
+        const sessionEvents = this.langGraphEventBridge.toSessionEventsFromGraphEvent(chunk.payload);
+        for (const event of sessionEvents) {
+          this.sessionManager.broadcastToSession(sessionId, event.event, event.payload);
+        }
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'LangGraph agent response failed';
+      this.sessionManager.broadcastToSession(sessionId, 'agent:error', {
+        sessionId,
+        messageId: existingMessage.id,
+        error: reason,
+        timestamp: new Date().toISOString(),
+      });
+      this.logger.error(`langgraph retry failed, session=${sessionId}, reason=${reason}`);
     }
 
     return { ok: true };

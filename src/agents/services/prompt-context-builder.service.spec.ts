@@ -62,3 +62,34 @@ describe('PromptContextBuilderService', () => {
     expect(result.metrics.contextEstimatedTokens).toBeGreaterThan(0);
   });
 });
+
+describe('PromptContextBuilderService handoff regression', () => {
+  it('preserves assistant handoff line when it equals current question', () => {
+    const config = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService;
+    const service = new PromptContextBuilderService(config);
+
+    const result = service.buildCliPromptWithMetrics(
+      'Please implement this plan',
+      {
+        sessionId: 's1',
+        conversationHistory: [
+          { id: 'u1', sessionId: 's1', role: 'user', content: 'Please implement this plan', createdAt: new Date() },
+          {
+            id: 'a1',
+            sessionId: 's1',
+            role: 'assistant',
+            agentId: 'codex-001',
+            content: 'Please implement this plan',
+            createdAt: new Date(),
+          },
+        ],
+      },
+      { historyLimit: 6, semanticLimit: 0, summaryLimit: 0, tokenBudget: 100, lineMaxChars: 120 },
+    );
+
+    expect(result.prompt).toContain('ASSISTANT(codex-001): Please implement this plan');
+    expect(result.prompt).not.toContain('USER: Please implement this plan');
+  });
+});

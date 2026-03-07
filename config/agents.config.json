@@ -10,14 +10,8 @@
       "enabled": true,
       "role": "architecture_and_implementation",
       "description": "Owns system design, implementation planning, code generation, and technical decisions.",
-      "capabilities": [
-        "architecture_design",
-        "code_generation",
-        "refactoring",
-        "tech_selection",
-        "implementation"
-      ],
-      "callType": "http",
+      "capabilities": ["architecture_design", "code_generation", "refactoring", "tech_selection", "implementation"],
+      "callType": "cli",
       "config": {
         "apiProvider": "openrouter",
         "baseURL": "https://openrouter.ai/api/v1",
@@ -65,27 +59,12 @@
       "callType": "cli",
       "config": {
         "cliPath": "codex-cli",
-        "args": [
-          "--format",
-          "json",
-          "--timeout",
-          "60"
-        ],
+        "args": ["--format", "json", "--timeout", "60"],
         "timeout": 60000,
         "maxRetries": 3
       },
       "decision": {
-        "keywords": [
-          "review",
-          "check",
-          "test",
-          "quality",
-          "bug",
-          "issue",
-          "optimize",
-          "performance",
-          "security"
-        ],
+        "keywords": ["review", "check", "test", "quality", "bug", "issue", "optimize", "performance", "security"],
         "autoRespond": true,
         "priority": "medium",
         "mentionRequired": false,
@@ -115,28 +94,13 @@
       "callType": "cli",
       "config": {
         "cliPath": "gemini",
-        "args": [
-          "--model",
-          "gemini-pro",
-          "--format",
-          "json"
-        ],
+        "args": ["--model", "gemini-pro", "--format", "json"],
         "temperature": 0.8,
         "maxTokens": 4000,
         "timeout": 60000
       },
       "decision": {
-        "keywords": [
-          "design",
-          "ui",
-          "ux",
-          "layout",
-          "visual",
-          "interaction",
-          "experience",
-          "creative",
-          "style"
-        ],
+        "keywords": ["design", "ui", "ux", "layout", "visual", "interaction", "experience", "creative", "style"],
         "autoRespond": true,
         "priority": "medium",
         "mentionRequired": false

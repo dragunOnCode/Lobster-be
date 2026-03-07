@@ -64,22 +64,38 @@ export class PromptContextBuilderService {
     const semanticBuilt = this.buildSemanticReferenceBlock(context.semanticContext ?? [], resolved);
     const summaryBuilt = this.buildSummaryReferenceBlock(context.summaries ?? [], resolved);
 
-    const prompt = [
-      `CURRENT_QUESTION: ${userPrompt.trim()}`,
-      '',
-      'CONVERSATION_CONTEXT:',
-      conversationBuilt.content,
-      '',
-      'SEMANTIC_REFERENCE:',
-      semanticBuilt.content,
-      '',
-      'SUMMARY_REFERENCE:',
-      summaryBuilt.content,
-      '',
-      '回答要求：直接回答 CURRENT_QUESTION；其余段落仅作参考。',
-    ]
-      .filter((part) => part.length > 0)
-      .join('\n');
+    // Context-before-question: history → summary → semantic → current question (last)
+    const parts: string[] = [];
+
+    if (conversationBuilt.content) {
+      parts.push('<conversation_history>');
+      parts.push(conversationBuilt.content);
+      parts.push('</conversation_history>');
+      parts.push('');
+    }
+
+    if (summaryBuilt.content) {
+      parts.push('<conversation_summary>');
+      parts.push(summaryBuilt.content);
+      parts.push('</conversation_summary>');
+      parts.push('');
+    }
+
+    if (semanticBuilt.content) {
+      parts.push('<related_context>');
+      parts.push(semanticBuilt.content);
+      parts.push('</related_context>');
+      parts.push('');
+    }
+
+    if (parts.length > 0) {
+      parts.push('请根据以上对话历史和上下文，回答用户的最新问题：');
+      parts.push('');
+    }
+
+    parts.push(userPrompt.trim());
+
+    const prompt = parts.join('\n');
     const metrics: PromptContextMetrics = {
       contextChars: prompt.length,
       contextEstimatedTokens: this.estimateTokens(prompt),
@@ -111,11 +127,11 @@ export class PromptContextBuilderService {
         continue;
       }
       const normalized = this.normalizeForDedup(item.content);
-      if (!normalized || normalized === normalizedCurrent) {
+      if (this.shouldSkipHistoryItem(item, normalized, normalizedCurrent)) {
         continue;
       }
       candidateCount += 1;
-      const role = item.role === 'assistant' && item.agentId ? `ASSISTANT(${item.agentId})` : item.role.toUpperCase();
+      const role = item.role === 'user' ? 'User' : item.role === 'assistant' ? 'Assistant' : 'System';
       const line = `${role}: ${this.truncate(item.content.replace(/\s+/g, ' ').trim(), options.lineMaxChars)}`;
       if (usedChars + line.length > maxChars) {
         break;
@@ -132,6 +148,17 @@ export class PromptContextBuilderService {
       selected: selected.length,
       trimmed: Math.max(0, candidateCount - selected.length),
     };
+  }
+
+  private shouldSkipHistoryItem(item: Message, normalized: string, normalizedCurrent: string): boolean {
+    if (!normalized) {
+      return true;
+    }
+    if (normalized !== normalizedCurrent) {
+      return false;
+    }
+    // Preserve assistant handoff message even when it is identical to CURRENT_QUESTION.
+    return item.role !== 'assistant';
   }
 
   private buildSemanticReferenceBlock(

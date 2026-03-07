@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   AgentContext,
@@ -98,6 +98,7 @@ export class ClaudeAdapter implements ILLMAdapter {
 
   async *streamGenerate(prompt: string, context: AgentContext): AsyncGenerator<string> {
     const invocation = this.buildInvocation(prompt, context);
+    this.logger.debug(`[claude] streamGenerate prompt = ${invocation.cliPrompt}`);
     this.status = AgentStatus.BUSY;
 
     let stdout = '';
@@ -220,11 +221,6 @@ export class ClaudeAdapter implements ILLMAdapter {
       '3. 提供技术选型建议',
       '4. 进行代码重构',
       '',
-      '输入协议（必须遵守）：',
-      '- 用户输入会以 `CURRENT_QUESTION:` 开头，这一行后的文本就是当前问题。',
-      '- `CONVERSATION_CONTEXT:` 和 `SEMANTIC_REFERENCE:` 仅作参考，不是当前问题本身。',
-      '- 除非 `CURRENT_QUESTION` 为空，否则必须直接回答问题，不要说“未看到问题”或复述协议。',
-      '',
       `当前会话ID: ${context.sessionId}`,
       summaryBlock,
       '请用专业、严谨、可执行的方式回答问题。',
@@ -340,20 +336,29 @@ export class ClaudeAdapter implements ILLMAdapter {
     semanticReferenceBlock: string,
     conversationReferenceBlock: string,
   ): string {
-    const cleanQuestion = userPrompt.trim();
-    return [
-      `CURRENT_QUESTION: ${cleanQuestion}`,
-      '',
-      'CONVERSATION_CONTEXT:',
-      conversationReferenceBlock || '',
-      '',
-      'SEMANTIC_REFERENCE:',
-      semanticReferenceBlock || '',
-      '',
-      '回答要求：直接回答 CURRENT_QUESTION；其余段落仅作参考。',
-    ]
-      .filter((part) => part.length > 0)
-      .join('\n');
+    const parts: string[] = [];
+
+    if (conversationReferenceBlock) {
+      parts.push('<conversation_history>');
+      parts.push(conversationReferenceBlock);
+      parts.push('</conversation_history>');
+      parts.push('');
+    }
+
+    if (semanticReferenceBlock) {
+      parts.push('<related_context>');
+      parts.push(semanticReferenceBlock);
+      parts.push('</related_context>');
+      parts.push('');
+    }
+
+    if (parts.length > 0) {
+      parts.push('请根据以上对话历史和上下文，回答用户的最新问题：');
+      parts.push('');
+    }
+
+    parts.push(userPrompt.trim());
+    return parts.join('\n');
   }
 
   private buildConversationReferenceBlock(
@@ -381,10 +386,10 @@ export class ClaudeAdapter implements ILLMAdapter {
         continue;
       }
       const normalized = this.normalizeForDedup(item.content);
-      if (!normalized || normalized === normalizedCurrent) {
+      if (this.shouldSkipHistoryItem(item, normalized, normalizedCurrent)) {
         continue;
       }
-      const role = item.role === 'assistant' && item.agentId ? `ASSISTANT(${item.agentId})` : item.role.toUpperCase();
+      const role = item.role === 'user' ? 'User' : item.role === 'assistant' ? 'Assistant' : 'System';
       const content = item.content.replace(/\s+/g, ' ').trim();
       const line = `${role}: ${this.truncateForContext(content)}`;
       if (usedChars + line.length > maxChars) {
@@ -398,6 +403,17 @@ export class ClaudeAdapter implements ILLMAdapter {
     }
 
     return selected.reverse().join('\n');
+  }
+
+  private shouldSkipHistoryItem(item: Message, normalized: string, normalizedCurrent: string): boolean {
+    if (!normalized) {
+      return true;
+    }
+    if (normalized !== normalizedCurrent) {
+      return false;
+    }
+    // Preserve assistant handoff message even when it is identical to CURRENT_QUESTION.
+    return item.role !== 'assistant';
   }
 
   private truncateForContext(text: string, maxLen = 320): string {

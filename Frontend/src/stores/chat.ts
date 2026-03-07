@@ -86,6 +86,7 @@ export const useChatStore = defineStore('chat', () => {
   const eventKeyword = ref('');
   const eventTypeFilter = ref('all');
   const streamBuffer = ref<Record<string, StreamDraft>>({});
+  const errorMessageIds = ref<Set<string>>(new Set());
   const agentStates = ref<Record<string, AgentState>>(
     DEFAULT_AGENTS.reduce<Record<string, AgentState>>((acc, agent) => {
       acc[agent.agentId] = {
@@ -324,19 +325,27 @@ export const useChatStore = defineStore('chat', () => {
       connectionError.value = payload?.message || 'message send failed';
     });
 
-    socketRef.on('agent:thinking', (payload: { agentId: string; agentName: string; reason?: string }) => {
-      upsertAgentState(payload.agentId, payload.agentName, 'thinking', payload.reason);
-    });
-
     socketRef.on('agent:skip', (payload: { agentId: string; agentName: string; reason?: string }) => {
       upsertAgentState(payload.agentId, payload.agentName, 'skip', payload.reason);
     });
 
-    socketRef.on('agent:error', (payload: { agentId?: string; agentName?: string; error?: string }) => {
+    socketRef.on('agent:error', (payload: { agentId?: string; agentName?: string; messageId?: string; error?: string }) => {
+      if (payload.messageId) {
+        errorMessageIds.value = new Set([...errorMessageIds.value, payload.messageId]);
+      }
       if (!payload.agentId || !payload.agentName) {
         return;
       }
       upsertAgentState(payload.agentId, payload.agentName, 'error', payload.error);
+    });
+
+    socketRef.on('agent:thinking', (payload: { agentId: string; agentName: string; reason?: string; triggerMessageId?: string }) => {
+      if (payload.triggerMessageId) {
+        const next = new Set(errorMessageIds.value);
+        next.delete(payload.triggerMessageId);
+        errorMessageIds.value = next;
+      }
+      upsertAgentState(payload.agentId, payload.agentName, 'thinking', payload.reason);
     });
 
     socketRef.on('agent:stream', (payload: StreamPayload) => {
@@ -414,6 +423,28 @@ export const useChatStore = defineStore('chat', () => {
     streamBuffer.value = {};
   }
 
+  function retryMessage(messageId: string): boolean {
+    if (!socketRef || !socketRef.connected) {
+      connectionError.value = 'WebSocket is not connected';
+      return false;
+    }
+
+    const payload = {
+      messageId,
+      sessionId: config.value.sessionId,
+    };
+
+    pushDebugEvent({
+      direction: 'outbound',
+      event: 'message:retry',
+      payload,
+      sessionId: config.value.sessionId,
+    });
+
+    socketRef.emit('message:retry', payload);
+    return true;
+  }
+
   function sendMessage(content: string): boolean {
     if (!content.trim()) {
       return false;
@@ -465,6 +496,7 @@ export const useChatStore = defineStore('chat', () => {
     eventTypeOptions,
     agentStates,
     streamBuffer,
+    errorMessageIds,
     updateConfig,
     changeSession,
     createNewSession,
@@ -473,6 +505,7 @@ export const useChatStore = defineStore('chat', () => {
     connect,
     disconnect,
     sendMessage,
+    retryMessage,
     exportEvents,
   };
 });

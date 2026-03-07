@@ -1,0 +1,9 @@
+2026-03-07T05:47:32.714Z LOG [NestFactory] [nest-factory.js:105] Starting Nest application...
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] DatabaseModule dependencies initialized
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] TypeOrmModule dependencies initialized
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] ConfigHostModule dependencies initialized
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] AppModule dependencies initialized
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] DiscoveryModule dependencies initialized
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] ConfigModule dependencies initialized
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] ConfigModule dependencies initialized
+2026-03-07T05:47:32.714Z LOG [InstanceLoader] [instance-loader.js:45] BullModule dependencies initialized

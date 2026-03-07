@@ -38,6 +38,10 @@
           <div class="message-label">
             <span>{{ message.role === 'user' ? 'Sent' : 'Received' }}</span>
             <span class="message-time">{{ formatTime(message.createdAt) }}</span>
+            <span v-if="message.role === 'user' && chat.errorMessageIds.has(message.id)" class="message-error-badge">
+              <icon-exclamation-circle-fill class="error-icon" />
+              <span>发送失败</span>
+            </span>
           </div>
           <div class="message-content-box">
             <div v-if="message.role !== 'user'" class="message-avatar">
@@ -45,7 +49,17 @@
                 <img :src="getAvatar(message.agentName || 'System')" alt="avatar" />
               </a-avatar>
             </div>
-            <div class="bubble markdown-body" v-html="renderMarkdown(message.content)"></div>
+            <div
+              class="bubble markdown-body"
+              :class="{ 'bubble-error': message.role === 'user' && chat.errorMessageIds.has(message.id) }"
+              v-html="renderMarkdown(message.content)"
+            ></div>
+          </div>
+          <div v-if="message.role === 'user' && chat.errorMessageIds.has(message.id)" class="retry-action">
+            <button class="retry-btn" @click="handleRetry(message.id)">
+              <icon-refresh />
+              <span>重试</span>
+            </button>
           </div>
         </div>
       </TransitionGroup>
@@ -119,6 +133,8 @@ import {
   IconFaceSmileFill,
   IconAttachment,
   IconDown,
+  IconRefresh,
+  IconExclamationCircleFill,
 } from '@arco-design/web-vue/es/icon';
 import { useChatStore } from '../stores/chat';
 
@@ -169,6 +185,13 @@ function handleSend() {
   }
   draft.value = '';
   scrollToBottom(true);
+}
+
+function handleRetry(messageId: string) {
+  const ok = chat.retryMessage(messageId);
+  if (!ok) {
+    Message.warning(chat.connectionError || 'Chat service is not connected');
+  }
 }
 
 function scrollToBottom(smooth: boolean = false) {
@@ -593,6 +616,60 @@ defineEmits(['open-debug']);
 
 .glass-send-btn:active {
   transform: translateY(0) scale(0.97);
+}
+
+/* Error state */
+.message-error-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #ff4d4f;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.error-icon {
+  font-size: 13px;
+}
+
+.bubble-error {
+  border: 1.5px solid rgba(255, 77, 79, 0.45) !important;
+  box-shadow: 0 2px 8px rgba(255, 77, 79, 0.18) !important;
+}
+
+.retry-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  padding-right: 2px;
+}
+
+.retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 77, 79, 0.4);
+  background: rgba(255, 77, 79, 0.06);
+  color: #ff4d4f;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.retry-btn:hover {
+  background: rgba(255, 77, 79, 0.12);
+  border-color: rgba(255, 77, 79, 0.65);
+  transform: scale(1.04);
+}
+
+.retry-btn:active {
+  transform: scale(0.97);
+}
+
+.retry-btn :deep(svg) {
+  font-size: 14px;
 }
 
 /* Handle overflow in markdown content */
