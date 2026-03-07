@@ -10,3 +10,4 @@ Frontend/tsconfig.app.tsbuildinfo
 .codex
 .gemini
 .playwright-mcp
+.logs

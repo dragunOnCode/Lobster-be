@@ -1425,3 +1425,5 @@ User: @Codex 你有什么推荐吗
 2026-03-07T06:02:36.567Z ERROR [ChatGateway] [chat.gateway.ts:236] langgraph retry failed, session=21c89035-8b30-4421-aff1-e7a50efabdbc, reason=CLI timed out after 60000ms: codex exec --json -
 2026-03-07T06:05:06.722Z WARN [ScheduledTasksProcessor] [scheduled-tasks.processor.ts:192] Agent unhealthy: gemini-001 (Gemini)
 2026-03-07T06:05:06.723Z LOG [ScheduledTasksProcessor] [scheduled-tasks.processor.ts:113] Health check completed in 6711ms, total=3, unhealthy=1, failed=0
+2026-03-07T06:10:06.732Z WARN [ScheduledTasksProcessor] [scheduled-tasks.processor.ts:192] Agent unhealthy: gemini-001 (Gemini)
+2026-03-07T06:10:06.734Z LOG [ScheduledTasksProcessor] [scheduled-tasks.processor.ts:113] Health check completed in 6727ms, total=3, unhealthy=1, failed=0
