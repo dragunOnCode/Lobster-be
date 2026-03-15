@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { AgentStatus } from '../interfaces';
 import { ClaudeAdapter } from './claude.adapter';
 import { CliRunnerService } from '../services/cli-runner.service';
+import { PromptContextBuilderService } from '../services/prompt-context-builder.service';
 
 async function* streamChunks(chunks: string[]) {
   for (const chunk of chunks) {
@@ -24,7 +25,14 @@ describe('ClaudeAdapter', () => {
       getOrThrow: jest.fn(),
     };
 
-    adapter = new ClaudeAdapter(cliRunner as unknown as CliRunnerService, configService as unknown as ConfigService);
+    const promptContextBuilder = new PromptContextBuilderService({
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService);
+    adapter = new ClaudeAdapter(
+      cliRunner as unknown as CliRunnerService,
+      configService as unknown as ConfigService,
+      promptContextBuilder,
+    );
   });
 
   it('throws when CLAUDE_TIMEOUT_MS is missing and keeps status OFFLINE', async () => {
@@ -181,8 +189,8 @@ describe('ClaudeAdapter', () => {
     const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
     const promptIndex = call.args.findIndex((arg) => arg === '-p');
     const cliPrompt = call.args[promptIndex + 1];
-    expect(cliPrompt).toContain('CURRENT_QUESTION');
-    expect(cliPrompt).toContain('CONVERSATION_CONTEXT');
+    expect(cliPrompt).toContain('# context');
+    expect(cliPrompt).toContain('## user_intent');
     expect(cliPrompt).toContain('long historical user message');
   });
 
@@ -224,7 +232,7 @@ describe('ClaudeAdapter', () => {
     const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
     const promptIndex = call.args.findIndex((arg) => arg === '-p');
     const cliPrompt = call.args[promptIndex + 1];
-    expect(cliPrompt).toContain('ASSISTANT(codex-001): Please implement this plan');
-    expect(cliPrompt).not.toContain('USER: Please implement this plan');
+    expect(cliPrompt).toContain('Assistant: Please implement this plan');
+    expect(cliPrompt).not.toContain('User: Please implement this plan');
   });
 });

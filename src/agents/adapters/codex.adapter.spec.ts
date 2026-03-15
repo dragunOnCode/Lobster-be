@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { CodexAdapter } from './codex.adapter';
 import { CliRunnerService } from '../services/cli-runner.service';
+import { PromptContextBuilderService } from '../services/prompt-context-builder.service';
 
 describe('CodexAdapter', () => {
   let adapter: CodexAdapter;
@@ -20,10 +21,18 @@ describe('CodexAdapter', () => {
       get: jest.fn().mockReturnValue(undefined),
     };
 
-    adapter = new CodexAdapter(cliRunner as unknown as CliRunnerService, configService as unknown as ConfigService);
+    const promptContextBuilder = new PromptContextBuilderService({
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService);
+
+    adapter = new CodexAdapter(
+      cliRunner as unknown as CliRunnerService,
+      configService as unknown as ConfigService,
+      promptContextBuilder,
+    );
   });
 
-  it('generate 应解析 CLI 输出', async () => {
+  it('parses CLI output and injects unified prompt sections', async () => {
     const context = {
       sessionId: 's1',
       semanticContext: [{ id: 'v1', content: '历史代码规范', similarity: 0.88 }],
@@ -41,13 +50,15 @@ describe('CodexAdapter', () => {
     const result = await adapter.generate('please review', context);
     expect(result.content).toBe('codex result');
     expect(result.metadata).toEqual(expect.objectContaining({ tokens: 123 }));
+
     const call = cliRunner.run.mock.calls[0][0] as { input: string };
-    expect(call.input).toContain('CURRENT_QUESTION: please review');
-    expect(call.input).toContain('语义相关历史');
+    expect(call.input).toContain('## user_intent');
+    expect(call.input).toContain('please review');
+    expect(call.input).toContain('## conversation');
     expect(call.input).toContain('历史代码规范');
   });
 
-  it('shouldRespond 命中 @Codex', async () => {
+  it('should respond on direct @Codex mention', async () => {
     const decision = await adapter.shouldRespond(
       { id: 'm1', sessionId: 's1', role: 'user', content: '@Codex 帮我看看' },
       { sessionId: 's1' },
@@ -55,7 +66,7 @@ describe('CodexAdapter', () => {
     expect(decision).toEqual(expect.objectContaining({ should: true, priority: 'high' }));
   });
 
-  it('shouldRespond 命中关键词', async () => {
+  it('should respond on review keywords', async () => {
     const decision = await adapter.shouldRespond(
       { id: 'm1', sessionId: 's1', role: 'user', content: '这段代码有 bug 吗？' },
       { sessionId: 's1' },
@@ -63,7 +74,7 @@ describe('CodexAdapter', () => {
     expect(decision).toEqual(expect.objectContaining({ should: true, priority: 'medium' }));
   });
 
-  it('shouldRespond 命中工作空间变更', async () => {
+  it('should respond when workspace changed', async () => {
     const decision = await adapter.shouldRespond(
       { id: 'm1', sessionId: 's1', role: 'user', content: '看看这个提交' },
       { sessionId: 's1', workspaceChange: { type: 'file_updated', path: 'src/a.ts' } },
@@ -71,7 +82,7 @@ describe('CodexAdapter', () => {
     expect(decision).toEqual(expect.objectContaining({ should: true, priority: 'medium' }));
   });
 
-  it('shouldRespond 未命中规则应返回 false', async () => {
+  it('should not respond when no rule matched', async () => {
     const decision = await adapter.shouldRespond(
       { id: 'm1', sessionId: 's1', role: 'user', content: '今天天气不错' },
       { sessionId: 's1' },

@@ -71,7 +71,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const history = await this.chatService.getRecentMessages(sessionId, 20);
     client.emit('chat:history', history);
-    
+
     const sessions = await this.chatService.listSessions();
     client.emit('session:list', sessions);
 
@@ -248,9 +248,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('message:error', { message: 'sessionId 鍜?title 涓嶈兘涓虹┖' });
       return { ok: false };
     }
-    
+
     await this.chatService.renameSession(payload.sessionId.trim(), payload.title.trim());
-    
+
     const sessions = await this.chatService.listSessions();
     this.sessionManager.broadcastToAll('session:list', sessions);
     return { ok: true };

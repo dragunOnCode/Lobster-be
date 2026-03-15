@@ -21,7 +21,7 @@ export class CodexAdapter implements ILLMAdapter {
   constructor(
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
-    private readonly promptContextBuilder?: PromptContextBuilderService,
+    private readonly promptContextBuilder: PromptContextBuilderService,
   ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
@@ -36,20 +36,18 @@ export class CodexAdapter implements ILLMAdapter {
 
     try {
       const enhancedContext = context;
-      const userPrompt = this.promptContextBuilder?.buildUserPrompt(prompt) ?? this.buildUserPrompt(prompt);
-      const promptBuilt = this.promptContextBuilder?.buildCliPromptWithMetrics(userPrompt, enhancedContext, {
+      const userPrompt = this.promptContextBuilder.buildUserPrompt(prompt);
+      const promptBuilt = this.promptContextBuilder.buildCliPromptWithMetrics(userPrompt, enhancedContext, {
         historyLimit,
         semanticLimit,
         summaryLimit,
         tokenBudget,
         lineMaxChars,
       });
-      const cliPrompt =
-        promptBuilt?.prompt ??
-        this.buildCliPrompt(userPrompt, this.buildContextReferenceBlock(enhancedContext, userPrompt));
+      const cliPrompt = promptBuilt.prompt;
       this.logger.debug(`codex cliprompt = ${cliPrompt}`);
       this.logger.log(
-        `generate session=${enhancedContext.sessionId} contextChars=${promptBuilt?.metrics.contextChars ?? cliPrompt.length} contextEstimatedTokens=${promptBuilt?.metrics.contextEstimatedTokens ?? Math.ceil(cliPrompt.length / 4)} historyItems=${promptBuilt?.metrics.historyItems ?? 'n/a'} semanticItems=${promptBuilt?.metrics.semanticItems ?? 'n/a'} summaryItems=${promptBuilt?.metrics.summaryItems ?? 'n/a'} trimmedItems=${promptBuilt?.metrics.trimmedItems ?? 'n/a'}`,
+        `generate session=${enhancedContext.sessionId} contextChars=${promptBuilt.metrics.contextChars} contextEstimatedTokens=${promptBuilt.metrics.contextEstimatedTokens} historyItems=${promptBuilt.metrics.historyItems} semanticItems=${promptBuilt.metrics.semanticItems} summaryItems=${promptBuilt.metrics.summaryItems} trimmedItems=${promptBuilt.metrics.trimmedItems}`,
       );
       const result = await this.runCodex(cliPath, cliPrompt, timeoutMs);
 
@@ -162,76 +160,15 @@ export class CodexAdapter implements ILLMAdapter {
     prompt: string,
     timeoutMs: number,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    this.logger.log(`runCodex: ${cliPath}, args: ${['exec', '--json', '-']}, timeout: ${timeoutMs}, input: ${prompt}`);
+    this.logger.log(
+      `runCodex: ${cliPath}, args: ${['exec', '--skip-git-repo-check', '--json']}, timeout: ${timeoutMs}, input: ${prompt}`,
+    );
     return this.cliRunner.run({
       command: cliPath,
-      args: ['exec', '--json', '-'],
+      args: ['exec', '--skip-git-repo-check', '--json'],
       timeout: timeoutMs,
       input: prompt,
     });
-  }
-
-  private buildUserPrompt(prompt: string): string {
-    const trimmed = prompt.trim();
-    const withoutMention = trimmed.replace(/^@\S+\s*/u, '').trim();
-    return withoutMention.length > 0 ? withoutMention : trimmed;
-  }
-
-  private buildCliPrompt(userPrompt: string, contextReference: string): string {
-    return [
-      `CURRENT_QUESTION: ${userPrompt}`,
-      '',
-      'CONTEXT_REFERENCE:',
-      contextReference,
-      '',
-      '回答要求：优先直接回答 CURRENT_QUESTION；CONTEXT_REFERENCE 仅作补充参考。',
-    ]
-      .filter((part) => part.length > 0)
-      .join('\n');
-  }
-
-  private buildContextReferenceBlock(context: AgentContext, currentUserPrompt: string): string {
-    const sections: string[] = [];
-    const normalizedCurrent = this.normalizeForDedup(currentUserPrompt);
-
-    const historyLines = (context.conversationHistory ?? [])
-      .filter((item) => item.content?.trim())
-      .filter((item) => this.normalizeForDedup(item.content) !== normalizedCurrent)
-      .slice(-6)
-      .map((item) => {
-        const role = item.role === 'assistant' && item.agentId ? `ASSISTANT(${item.agentId})` : item.role.toUpperCase();
-        return `${role}: ${this.truncate(item.content.replace(/\s+/g, ' ').trim(), 220)}`;
-      });
-    if (historyLines.length > 0) {
-      sections.push('近期对话:\n' + historyLines.join('\n'));
-    }
-
-    const semanticLines = (context.semanticContext ?? [])
-      .slice(0, 3)
-      .map((item, index) => `[${index + 1}] 相似度=${item.similarity.toFixed(3)} ${this.truncate(item.content, 220)}`);
-    if (semanticLines.length > 0) {
-      sections.push('语义相关历史:\n' + semanticLines.join('\n'));
-    }
-
-    const summaries = (context.summaries ?? [])
-      .slice(0, 2)
-      .map((item, index) => `${index + 1}. ${this.truncate(item, 220)}`);
-    if (summaries.length > 0) {
-      sections.push('历史摘要:\n' + summaries.join('\n'));
-    }
-
-    return sections.join('\n\n');
-  }
-
-  private truncate(text: string, maxLen: number): string {
-    if (text.length <= maxLen) {
-      return text;
-    }
-    return `${text.slice(0, maxLen)}...`;
-  }
-
-  private normalizeForDedup(text: string): string {
-    return text.replace(/\s+/g, ' ').trim();
   }
 
   private extractContentFromEvents(events: Record<string, unknown>[]): string | undefined {

@@ -82,4 +82,13 @@ describe('WorkspaceService', () => {
       expect.objectContaining({ type: 'message_saved', role: 'assistant' }),
     ]);
   });
+
+  it('deleteSession removes session workspace recursively', async () => {
+    await service.initializeSession('session-4');
+    await service.saveCodeFile('session-4', 'src/a.ts', 'export const a = 1;\n', 'claude-001');
+
+    await service.deleteSession('session-4');
+
+    await expect(service.readTranscript('session-4')).rejects.toBeTruthy();
+  });
 });

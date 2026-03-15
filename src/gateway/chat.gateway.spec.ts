@@ -1,4 +1,5 @@
 import { ChatService } from '../chat/chat.service';
+import { LangGraphCheckpointerService } from '../langgraph/services/langgraph-checkpointer.service';
 import { LangGraphOrchestratorService } from '../langgraph/services/langgraph-orchestrator.service';
 import { ChatGateway } from './chat.gateway';
 import { MessageRouter } from './message.router';
@@ -16,6 +17,7 @@ describe('ChatGateway', () => {
   let sessionManager: SessionManager;
   let chatService: ChatService;
   let langGraphOrchestrator: LangGraphOrchestratorService;
+  let langGraphCheckpointer: LangGraphCheckpointerService;
 
   beforeEach(() => {
     sessionManager = new SessionManager();
@@ -74,12 +76,18 @@ describe('ChatGateway', () => {
         ]),
       ),
     } as unknown as LangGraphOrchestratorService;
+    langGraphCheckpointer = {
+      getCheckpointer: jest.fn().mockResolvedValue({
+        deleteThread: jest.fn().mockResolvedValue(undefined),
+      }),
+    } as unknown as LangGraphCheckpointerService;
 
     gateway = new ChatGateway(
       sessionManager,
       new MessageRouter(),
       chatService,
       langGraphOrchestrator,
+      langGraphCheckpointer,
       new LangGraphEventBridgeService(),
     );
   });
@@ -238,6 +246,34 @@ describe('ChatGateway', () => {
       expect.objectContaining({
         sessionId: 's1',
         error: 'graph failed',
+      }),
+    );
+  });
+
+  it('should delete a session and broadcast session updates', async () => {
+    const emit = jest.fn();
+    const client = {
+      id: 'client-delete',
+      handshake: { query: { sessionId: 's1', userId: 'u1' } },
+      emit,
+      join: jest.fn(),
+      disconnect: jest.fn(),
+    } as any;
+
+    const deleteSessionSpy = jest.spyOn(chatService, 'deleteSession').mockResolvedValue(undefined);
+    const listSessionsSpy = jest.spyOn(chatService, 'listSessions').mockResolvedValue([{ id: 's2', title: 'S2' }]);
+
+    await gateway.handleConnection(client);
+    const result = await gateway.handleDeleteSession(client, { sessionId: 's1' });
+
+    expect(result.ok).toBe(true);
+    expect(deleteSessionSpy).toHaveBeenCalledWith('s1');
+    expect(listSessionsSpy).toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith('session:list', [{ id: 's2', title: 'S2' }]);
+    expect(emit).toHaveBeenCalledWith(
+      'session:deleted',
+      expect.objectContaining({
+        sessionId: 's1',
       }),
     );
   });

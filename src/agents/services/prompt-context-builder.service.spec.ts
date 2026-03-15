@@ -22,10 +22,10 @@ describe('PromptContextBuilderService', () => {
       { historyLimit: 1, semanticLimit: 1, summaryLimit: 1, tokenBudget: 100, lineMaxChars: 50 },
     );
 
-    expect(prompt).toContain('CURRENT_QUESTION: 请评审');
-    expect(prompt).toContain('CONVERSATION_CONTEXT');
-    expect(prompt).toContain('SEMANTIC_REFERENCE');
-    expect(prompt).toContain('SUMMARY_REFERENCE');
+    expect(prompt).toContain('# system');
+    expect(prompt).toContain('## conversation');
+    expect(prompt).toContain('## user_intent');
+    expect(prompt).toContain('请评审');
     expect(prompt).toContain('历史安全规范');
     expect(prompt).toContain('已确认：先补测试再重构');
     expect(prompt).not.toContain('请重点看安全问题');
@@ -55,7 +55,8 @@ describe('PromptContextBuilderService', () => {
       { historyLimit: 8, semanticLimit: 1, summaryLimit: 2, tokenBudget: 200, lineMaxChars: 80 },
     );
 
-    expect(result.prompt).toContain('CURRENT_QUESTION: 请总结重点');
+    expect(result.prompt).toContain('## user_intent');
+    expect(result.prompt).toContain('请总结重点');
     expect(result.metrics.historyItems).toBeLessThanOrEqual(8);
     expect(result.metrics.trimmedItems).toBeGreaterThan(0);
     expect(result.metrics.contextChars).toBe(result.prompt.length);
@@ -89,7 +90,7 @@ describe('PromptContextBuilderService handoff regression', () => {
       { historyLimit: 6, semanticLimit: 0, summaryLimit: 0, tokenBudget: 100, lineMaxChars: 120 },
     );
 
-    expect(result.prompt).toContain('ASSISTANT(codex-001): Please implement this plan');
-    expect(result.prompt).not.toContain('USER: Please implement this plan');
+    expect(result.prompt).toContain('Assistant: Please implement this plan');
+    expect(result.prompt).not.toContain('User: Please implement this plan');
   });
 });

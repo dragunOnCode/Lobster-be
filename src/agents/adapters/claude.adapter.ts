@@ -1,21 +1,8 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  AgentContext,
-  AgentResponse,
-  AgentStatus,
-  DecisionResult,
-  ILLMAdapter,
-  Message,
-  SemanticContextItem,
-} from '../interfaces';
+import { AgentContext, AgentResponse, AgentStatus, DecisionResult, ILLMAdapter, Message } from '../interfaces';
 import { CliExitError, CliNotFoundError, CliRunnerService, TimeoutError } from '../services/cli-runner.service';
 import { PromptContextBuilderService } from '../services/prompt-context-builder.service';
-
-interface OpenRouterMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
 
 @Injectable()
 export class ClaudeAdapter implements ILLMAdapter {
@@ -33,7 +20,7 @@ export class ClaudeAdapter implements ILLMAdapter {
   constructor(
     private readonly cliRunner: CliRunnerService,
     private readonly configService: ConfigService,
-    private readonly promptContextBuilder?: PromptContextBuilderService,
+    private readonly promptContextBuilder: PromptContextBuilderService,
   ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
@@ -109,8 +96,9 @@ export class ClaudeAdapter implements ILLMAdapter {
     try {
       for await (const event of this.cliRunner.stream({
         command: invocation.cliPath,
-        args: this.buildClaudeArgs(invocation.cliPrompt),
+        args: this.buildClaudeArgs(),
         timeout: invocation.timeoutMs,
+        input: invocation.cliPrompt,
         stopOnClaudeResultEvent: true,
       })) {
         if (event.stream !== 'stdout') {
@@ -207,261 +195,12 @@ export class ClaudeAdapter implements ILLMAdapter {
     return this.status;
   }
 
-  private buildSystemPrompt(context: AgentContext): string {
-    const summaryBlock =
-      context.summaries && context.summaries.length > 0
-        ? `\n相关历史摘要:\n${context.summaries.map((item, index) => `${index + 1}. ${item}`).join('\n')}`
-        : '';
-
-    return [
-      '你是Claude，一个专业的软件架构师和全栈开发工程师。',
-      '你的职责是：',
-      '1. 设计系统架构',
-      '2. 编写高质量代码',
-      '3. 提供技术选型建议',
-      '4. 进行代码重构',
-      '',
-      `当前会话ID: ${context.sessionId}`,
-      summaryBlock,
-      '请用专业、严谨、可执行的方式回答问题。',
-    ].join('\n');
-  }
-
-  private buildUserPrompt(prompt: string): string {
-    const trimmed = prompt.trim();
-    const withoutMention = trimmed.replace(/^@\S+\s*/u, '').trim();
-    return withoutMention.length > 0 ? withoutMention : trimmed;
-  }
-
-  private buildSemanticReferenceBlock(context: AgentContext): string {
-    if (!context.semanticContext || context.semanticContext.length === 0) {
-      return '';
-    }
-    const semanticItems = this.dedupeSemanticContextItems(context.semanticContext);
-    if (semanticItems.length === 0) {
-      return '';
-    }
-    this.logger.debug(`Inject semantic context session=${context.sessionId} dedupedCount=${semanticItems.length}`);
-
-    const semanticBlock = semanticItems
-      .map(
-        (item, index) =>
-          `[${index + 1}] 相似度=${item.similarity.toFixed(3)}${item.timestamp ? ` 时间=${item.timestamp}` : ''}\n${item.content}`,
-      )
-      .join('\n\n');
-
-    return ['以下是与当前问题语义相关的历史上下文，仅作参考，不是当前用户问题：', semanticBlock].join('\n');
-  }
-
-  private buildRequestMessages(
-    context: AgentContext,
-    currentUserPrompt: string,
-    rawPrompt: string,
-    historyLimit: number,
-    contextTokenBudget: number,
-    includeConversationHistory = true,
-  ): OpenRouterMessage[] {
-    const systemMessage: OpenRouterMessage = {
-      role: 'system',
-      content: this.buildSystemPrompt(context),
-    };
-    const currentUserMessage: OpenRouterMessage = {
-      role: 'user',
-      content: currentUserPrompt,
-    };
-    const history = includeConversationHistory
-      ? this.normalizeConversationHistory(context.conversationHistory ?? [], rawPrompt, historyLimit)
-      : [];
-    const budget =
-      Number.isFinite(contextTokenBudget) && contextTokenBudget > 0 ? Math.floor(contextTokenBudget) : 12000;
-    const trimmedHistory = this.trimHistoryByEstimatedTokens(systemMessage, currentUserMessage, history, budget);
-    return [systemMessage, ...trimmedHistory, currentUserMessage];
-  }
-
-  private normalizeConversationHistory(
-    history: Message[],
-    rawPrompt: string,
-    historyLimit: number,
-  ): OpenRouterMessage[] {
-    const normalized = history
-      .filter(
-        (item) => (item.role === 'user' || item.role === 'assistant' || item.role === 'system') && item.content.trim(),
-      )
-      .map((item) => ({ role: item.role, content: item.content.trim() }));
-
-    if (normalized.length > 0) {
-      const last = normalized[normalized.length - 1];
-      if (last.role === 'user' && last.content === rawPrompt.trim()) {
-        normalized.pop();
-      }
-    }
-
-    const safeLimit = Number.isFinite(historyLimit) && historyLimit > 0 ? Math.floor(historyLimit) : 12;
-    return this.dedupeHistoryMessages(normalized).slice(-safeLimit);
-  }
-
-  private trimHistoryByEstimatedTokens(
-    systemMessage: OpenRouterMessage,
-    currentUserMessage: OpenRouterMessage,
-    history: OpenRouterMessage[],
-    tokenBudget: number,
-  ): OpenRouterMessage[] {
-    const fixedCost = this.estimateMessageTokens(systemMessage) + this.estimateMessageTokens(currentUserMessage);
-    let remaining = tokenBudget - fixedCost;
-    if (remaining <= 0 || history.length === 0) {
-      return [];
-    }
-
-    const selected: OpenRouterMessage[] = [];
-    for (let i = history.length - 1; i >= 0; i -= 1) {
-      const msg = history[i];
-      const cost = this.estimateMessageTokens(msg);
-      if (cost > remaining) {
-        continue;
-      }
-      selected.push(msg);
-      remaining -= cost;
-    }
-
-    return selected.reverse();
-  }
-
-  private estimateMessageTokens(message: OpenRouterMessage): number {
-    // Rough heuristic for budget control: ~4 chars/token + per-message overhead.
-    return Math.ceil(message.content.length / 4) + 6;
-  }
-
-  private buildCliPrompt(
-    userPrompt: string,
-    semanticReferenceBlock: string,
-    conversationReferenceBlock: string,
-  ): string {
-    const parts: string[] = [];
-
-    if (conversationReferenceBlock) {
-      parts.push('<conversation_history>');
-      parts.push(conversationReferenceBlock);
-      parts.push('</conversation_history>');
-      parts.push('');
-    }
-
-    if (semanticReferenceBlock) {
-      parts.push('<related_context>');
-      parts.push(semanticReferenceBlock);
-      parts.push('</related_context>');
-      parts.push('');
-    }
-
-    if (parts.length > 0) {
-      parts.push('请根据以上对话历史和上下文，回答用户的最新问题：');
-      parts.push('');
-    }
-
-    parts.push(userPrompt.trim());
-    return parts.join('\n');
-  }
-
-  private buildConversationReferenceBlock(
-    history: Message[],
-    currentUserPrompt: string,
-    historyLimit: number,
-    contextTokenBudget: number,
-  ): string {
-    if (!Array.isArray(history) || history.length === 0) {
-      return '';
-    }
-
-    const normalizedCurrent = this.normalizeForDedup(currentUserPrompt);
-    const safeLimit = Number.isFinite(historyLimit) && historyLimit > 0 ? Math.floor(historyLimit) : 12;
-    const maxChars = Math.max(
-      1200,
-      Math.floor((Number.isFinite(contextTokenBudget) ? contextTokenBudget : 12000) * 2.5),
-    );
-    const selected: string[] = [];
-    let usedChars = 0;
-
-    for (let i = history.length - 1; i >= 0; i -= 1) {
-      const item = history[i];
-      if (!item?.content?.trim()) {
-        continue;
-      }
-      const normalized = this.normalizeForDedup(item.content);
-      if (this.shouldSkipHistoryItem(item, normalized, normalizedCurrent)) {
-        continue;
-      }
-      const role = item.role === 'user' ? 'User' : item.role === 'assistant' ? 'Assistant' : 'System';
-      const content = item.content.replace(/\s+/g, ' ').trim();
-      const line = `${role}: ${this.truncateForContext(content)}`;
-      if (usedChars + line.length > maxChars) {
-        break;
-      }
-      selected.push(line);
-      usedChars += line.length;
-      if (selected.length >= safeLimit) {
-        break;
-      }
-    }
-
-    return selected.reverse().join('\n');
-  }
-
-  private shouldSkipHistoryItem(item: Message, normalized: string, normalizedCurrent: string): boolean {
-    if (!normalized) {
-      return true;
-    }
-    if (normalized !== normalizedCurrent) {
-      return false;
-    }
-    // Preserve assistant handoff message even when it is identical to CURRENT_QUESTION.
-    return item.role !== 'assistant';
-  }
-
-  private truncateForContext(text: string, maxLen = 320): string {
-    if (text.length <= maxLen) {
-      return text;
-    }
-    return `${text.slice(0, maxLen)}...`;
-  }
-
-  private dedupeSemanticContextItems(items: SemanticContextItem[]): SemanticContextItem[] {
-    const seen = new Set<string>();
-    const deduped: SemanticContextItem[] = [];
-    for (const item of items) {
-      const key = this.normalizeForDedup(item.content);
-      if (!key || seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      deduped.push(item);
-    }
-    return deduped;
-  }
-
-  private dedupeHistoryMessages(messages: OpenRouterMessage[]): OpenRouterMessage[] {
-    const seen = new Set<string>();
-    const reversedUnique: OpenRouterMessage[] = [];
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const msg = messages[i];
-      const key = `${msg.role}:${this.normalizeForDedup(msg.content)}`;
-      if (!key || seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      reversedUnique.push(msg);
-    }
-    return reversedUnique.reverse();
-  }
-
-  private normalizeForDedup(text: string): string {
-    return text.replace(/\s+/g, ' ').trim();
-  }
-
   private async runClaude(
     cliPath: string,
     prompt: string,
     timeoutMs: number,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const baseArgs = this.buildClaudeArgs(prompt);
+    const baseArgs = this.buildClaudeArgs();
     // 问题定位思路：
     // 1) Claude 在 OpenRouter + stream-json 场景会先输出最终 result 事件；
     // 2) 进程偶发长时间不退出，导致上层只看到 timeout；
@@ -472,6 +211,7 @@ export class ClaudeAdapter implements ILLMAdapter {
       command: cliPath,
       args: baseArgs,
       timeout: timeoutMs,
+      input: prompt,
       stopOnClaudeResultEvent: true,
     });
   }
@@ -483,7 +223,7 @@ export class ClaudeAdapter implements ILLMAdapter {
     cliPath: string;
     timeoutMs: number;
     cliPrompt: string;
-    promptBuilt?: ReturnType<PromptContextBuilderService['buildCliPromptWithMetrics']>;
+    promptBuilt: ReturnType<PromptContextBuilderService['buildCliPromptWithMetrics']>;
   } {
     const cliPath = this.configService.get<string>('CLAUDE_CLI_PATH') ?? 'claude';
     const timeoutMs = Number(this.configService.getOrThrow<string>('CLAUDE_TIMEOUT_MS'));
@@ -492,26 +232,15 @@ export class ClaudeAdapter implements ILLMAdapter {
     const summaryLimit = Number(this.configService.get<string>('CLAUDE_CONTEXT_SUMMARY_LIMIT') ?? '2');
     const contextTokenBudget = Number(this.configService.get<string>('CLAUDE_CONTEXT_TOKEN_BUDGET') ?? '12000');
     const lineMaxChars = Number(this.configService.get<string>('CLAUDE_CONTEXT_LINE_MAX_CHARS') ?? '320');
-    const userPrompt = this.promptContextBuilder?.buildUserPrompt(prompt) ?? this.buildUserPrompt(prompt);
-    const promptBuilt = this.promptContextBuilder?.buildCliPromptWithMetrics(userPrompt, context, {
+    const userPrompt = this.promptContextBuilder.buildUserPrompt(prompt);
+    const promptBuilt = this.promptContextBuilder.buildCliPromptWithMetrics(userPrompt, context, {
       historyLimit,
       semanticLimit,
       summaryLimit,
       tokenBudget: contextTokenBudget,
       lineMaxChars,
     });
-    const cliPrompt =
-      promptBuilt?.prompt ??
-      this.buildCliPrompt(
-        userPrompt,
-        this.buildSemanticReferenceBlock(context),
-        this.buildConversationReferenceBlock(
-          context.conversationHistory ?? [],
-          userPrompt,
-          historyLimit,
-          contextTokenBudget,
-        ),
-      );
+    const cliPrompt = promptBuilt.prompt;
 
     this.logger.debug(`[claude] cliprompt = ${cliPrompt}`);
 
@@ -523,7 +252,7 @@ export class ClaudeAdapter implements ILLMAdapter {
     };
   }
 
-  private buildClaudeArgs(prompt: string): string[] {
+  private buildClaudeArgs(): string[] {
     return [
       '--model',
       this.model,
@@ -535,7 +264,6 @@ export class ClaudeAdapter implements ILLMAdapter {
       '--tools',
       '',
       '-p',
-      prompt,
     ];
   }
 

@@ -1,12 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  Annotation,
-  END,
-  getWriter,
-  LangGraphRunnableConfig,
-  START,
-  StateGraph,
-} from '@langchain/langgraph';
+import { Annotation, END, getWriter, LangGraphRunnableConfig, START, StateGraph } from '@langchain/langgraph';
 import { AgentContext, ILLMAdapter, Message } from '../../agents/interfaces';
 import { AgentService } from '../../agents/services/agent.service';
 import { ContextBuilderService } from '../../agents/services/context-builder.service';
@@ -227,10 +220,7 @@ export class FreeChatGraphService {
     };
   }
 
-  private async runNextTask(
-    state: ChatGraphState,
-    config?: LangGraphRunnableConfig,
-  ): Promise<Partial<ChatGraphState>> {
+  private async runNextTask(state: ChatGraphState, config?: LangGraphRunnableConfig): Promise<Partial<ChatGraphState>> {
     if (state.pendingTasks.length === 0 || state.completedTaskCount >= state.maxAgentTurns) {
       return {};
     }
@@ -238,7 +228,9 @@ export class FreeChatGraphService {
     const [task, ...remainingTasks] = state.pendingTasks;
     const agent = await this.agentService.getAgent(task.agentId);
     const context = await this.buildAgentContext(state, task);
+    // 调用cli agent生成内容
     const execution = await this.generateAgentContent(state, agent, task.triggerContent, context, config);
+    // 保存消息到数据库/JSONL
     const assistantMessage = await this.chatService.saveMessage({
       sessionId: state.sessionId,
       role: 'assistant',
@@ -253,15 +245,17 @@ export class FreeChatGraphService {
       .resolveTargets(execution.content, agents)
       .filter((agentId) => agentId !== agent.id);
 
-    const handoffTasks = handoffTargets.map<ChatGraphTask>((agentId) => ({
-      agentId,
-      triggerMessageId: assistantGraphMessage.id,
-      triggerRole: assistantGraphMessage.role,
-      triggerContent: assistantGraphMessage.content,
-      reason: `handoff from ${agent.id}`,
-      depth: task.depth + 1,
-      sourceAgentId: agent.id,
-    })).filter((item) => item.depth <= state.maxHandoffDepth);
+    const handoffTasks = handoffTargets
+      .map<ChatGraphTask>((agentId) => ({
+        agentId,
+        triggerMessageId: assistantGraphMessage.id,
+        triggerRole: assistantGraphMessage.role,
+        triggerContent: assistantGraphMessage.content,
+        reason: `handoff from ${agent.id}`,
+        depth: task.depth + 1,
+        sourceAgentId: agent.id,
+      }))
+      .filter((item) => item.depth <= state.maxHandoffDepth);
     const enqueued = this.enqueueTasks(remainingTasks, state.taskFingerprints, handoffTasks);
     const nextHistory = [...state.history, assistantGraphMessage];
     const nextOutputs = [
@@ -521,9 +515,7 @@ export class FreeChatGraphService {
   }
 
   private mergeSummaries(primary: string[], secondary: string[]): string[] {
-    const merged = [...primary, ...secondary]
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0);
+    const merged = [...primary, ...secondary].map((item) => item.trim()).filter((item) => item.length > 0);
 
     return Array.from(new Set(merged));
   }

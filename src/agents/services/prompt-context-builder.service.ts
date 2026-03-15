@@ -46,8 +46,8 @@ export class PromptContextBuilderService {
     return withoutMention.length > 0 ? withoutMention : trimmed;
   }
 
-  buildCliPrompt(userPrompt: string, context: AgentContext, options?: PromptContextBuildOptions): string {
-    return this.buildCliPromptWithMetrics(userPrompt, context, options).prompt;
+  buildCliPrompt(prompt: string, context: AgentContext, options?: PromptContextBuildOptions): string {
+    return this.buildCliPromptWithMetrics(prompt, context, options).prompt;
   }
 
   buildCliPromptWithMetrics(
@@ -64,38 +64,42 @@ export class PromptContextBuilderService {
     const semanticBuilt = this.buildSemanticReferenceBlock(context.semanticContext ?? [], resolved);
     const summaryBuilt = this.buildSummaryReferenceBlock(context.summaries ?? [], resolved);
 
-    // Context-before-question: history → summary → semantic → current question (last)
-    const parts: string[] = [];
-
+    const contextParts: string[] = [];
     if (conversationBuilt.content) {
-      parts.push('<conversation_history>');
-      parts.push(conversationBuilt.content);
-      parts.push('</conversation_history>');
-      parts.push('');
+      contextParts.push(conversationBuilt.content);
     }
-
     if (summaryBuilt.content) {
-      parts.push('<conversation_summary>');
-      parts.push(summaryBuilt.content);
-      parts.push('</conversation_summary>');
-      parts.push('');
+      contextParts.push(`Historical summaries:\n${summaryBuilt.content}`);
     }
-
     if (semanticBuilt.content) {
-      parts.push('<related_context>');
-      parts.push(semanticBuilt.content);
-      parts.push('</related_context>');
-      parts.push('');
+      contextParts.push(semanticBuilt.content);
     }
 
-    if (parts.length > 0) {
-      parts.push('请根据以上对话历史和上下文，回答用户的最新问题：');
-      parts.push('');
-    }
+    const contextText = contextParts.join('\n\n').trim() || '(no context)';
+    const prompt = [
+      '# system',
+      '',
+      '你是一个专业的 AI 助手。你的任务是：',
+      '',
+      '1. 根据下面的context标题下的文本理解历史对话的上下文.',
+      '2. 根据下面的user_intent标题下的文本理解用户当前的真实意图.',
+      '3. 完成下面task标题下的任务，给出简洁、准确、上下文一致的回答.',
+      '',
+      '# context',
+      '',
+      '## conversation',
+      '',
+      contextText,
+      '',
+      '## user_intent',
+      '',
+      userPrompt.trim(),
+      '',
+      '# task',
+      '',
+      '请根据以上内容生成回答.',
+    ].join('\n');
 
-    parts.push(userPrompt.trim());
-
-    const prompt = parts.join('\n');
     const metrics: PromptContextMetrics = {
       contextChars: prompt.length,
       contextEstimatedTokens: this.estimateTokens(prompt),
@@ -104,6 +108,7 @@ export class PromptContextBuilderService {
       summaryItems: summaryBuilt.selected,
       trimmedItems: conversationBuilt.trimmed + semanticBuilt.trimmed + summaryBuilt.trimmed,
     };
+
     return { prompt, metrics };
   }
 
@@ -115,29 +120,35 @@ export class PromptContextBuilderService {
     if (!Array.isArray(history) || history.length === 0) {
       return { content: '', selected: 0, trimmed: 0 };
     }
+
     const normalizedCurrent = this.normalizeForDedup(currentUserPrompt);
     const maxChars = Math.max(1200, Math.floor(options.tokenBudget * 2.5));
     const selected: string[] = [];
     let usedChars = 0;
     let candidateCount = 0;
 
-    for (let i = history.length - 1; i >= 0; i -= 1) {
-      const item = history[i];
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const item = history[index];
       if (!item?.content?.trim()) {
         continue;
       }
+
       const normalized = this.normalizeForDedup(item.content);
       if (this.shouldSkipHistoryItem(item, normalized, normalizedCurrent)) {
         continue;
       }
+
       candidateCount += 1;
       const role = item.role === 'user' ? 'User' : item.role === 'assistant' ? 'Assistant' : 'System';
-      const line = `${role}: ${this.truncate(item.content.replace(/\s+/g, ' ').trim(), options.lineMaxChars)}`;
+      const normalizedContent = item.content.replace(/\s+/g, ' ').trim();
+      const line = `${role}: ${this.truncate(normalizedContent, options.lineMaxChars)}`;
+
       if (usedChars + line.length > maxChars) {
         break;
       }
       selected.push(line);
       usedChars += line.length;
+
       if (selected.length >= options.historyLimit) {
         break;
       }
@@ -157,7 +168,7 @@ export class PromptContextBuilderService {
     if (normalized !== normalizedCurrent) {
       return false;
     }
-    // Preserve assistant handoff message even when it is identical to CURRENT_QUESTION.
+    // Keep assistant handoff line even if equal to current user intent.
     return item.role !== 'assistant';
   }
 
@@ -168,20 +179,22 @@ export class PromptContextBuilderService {
     if (!Array.isArray(items) || items.length === 0) {
       return { content: '', selected: 0, trimmed: 0 };
     }
+
     const deduped = this.dedupeSemanticItems(items);
     const selected = deduped.slice(0, options.semanticLimit);
     if (selected.length === 0) {
       return { content: '', selected: 0, trimmed: 0 };
     }
+
     const semanticBlock = selected
       .map((item, index) => {
-        const meta = item.timestamp ? ` 时间=${item.timestamp}` : '';
-        return `[${index + 1}] 相似度=${item.similarity.toFixed(3)}${meta}\n${this.truncate(item.content, options.lineMaxChars)}`;
+        const timestamp = item.timestamp ? ` time=${item.timestamp}` : '';
+        return `[${index + 1}] similarity=${item.similarity.toFixed(3)}${timestamp}\n${this.truncate(item.content, options.lineMaxChars)}`;
       })
       .join('\n\n');
 
     return {
-      content: ['以下是与当前问题语义相关的历史上下文，仅作参考，不是当前用户问题：', semanticBlock].join('\n'),
+      content: ['Semantic context related to the current question (reference only):', semanticBlock].join('\n'),
       selected: selected.length,
       trimmed: Math.max(0, deduped.length - selected.length),
     };
@@ -194,10 +207,14 @@ export class PromptContextBuilderService {
     if (!Array.isArray(summaries) || summaries.length === 0) {
       return { content: '', selected: 0, trimmed: 0 };
     }
+
     const selected = summaries.slice(0, options.summaryLimit);
     return {
       content: selected
-        .map((item, index) => `${index + 1}. ${this.truncate(item.replace(/\s+/g, ' ').trim(), options.lineMaxChars)}`)
+        .map(
+          (summary, index) =>
+            `${index + 1}. ${this.truncate(summary.replace(/\s+/g, ' ').trim(), options.lineMaxChars)}`,
+        )
         .join('\n'),
       selected: selected.length,
       trimmed: Math.max(0, summaries.length - selected.length),
@@ -207,6 +224,7 @@ export class PromptContextBuilderService {
   private dedupeSemanticItems(items: SemanticContextItem[]): SemanticContextItem[] {
     const seen = new Set<string>();
     const deduped: SemanticContextItem[] = [];
+
     for (const item of items) {
       const key = this.normalizeForDedup(item.content);
       if (!key || seen.has(key)) {
@@ -215,6 +233,7 @@ export class PromptContextBuilderService {
       seen.add(key);
       deduped.push(item);
     }
+
     return deduped;
   }
 

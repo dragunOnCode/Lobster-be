@@ -36,6 +36,12 @@ export class SharedMemoryService {
     await this.redis.set(key, JSON.stringify(state), 'EX', this.ttlSeconds);
   }
 
+  // 获取工作区状态：
+  // WorkspaceState 包含：
+  // - sessionId - 会话ID
+  // - updatedAt - 更新时间
+  // - lastUserMessage - 最后一条用户消息
+  // - mentionedAgents - 被提及的 Agent 列表
   async getWorkspaceState(sessionId: string): Promise<WorkspaceState | null> {
     const key = this.getWorkspaceStateKey(sessionId);
     const raw = await this.redis.get(key);
@@ -54,6 +60,13 @@ export class SharedMemoryService {
     await this.redis.set(key, JSON.stringify(decision), 'EX', this.ttlSeconds);
   }
 
+  // 获取Agent决策快照
+  // AgentDecisionSnapshot 包含：
+  // - agentId - Agent ID
+  // - should - 是否应该响应
+  // - reason - 决策原因
+  // - priority - 优先级
+  // - timestamp - 时间戳
   async getDecision(sessionId: string, agentId: string): Promise<AgentDecisionSnapshot | null> {
     const key = this.getDecisionKey(sessionId, agentId);
     const raw = await this.redis.get(key);

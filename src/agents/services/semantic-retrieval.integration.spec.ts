@@ -3,6 +3,7 @@ import { ClaudeAdapter } from '../adapters/claude.adapter';
 import { ContextBuilderService } from './context-builder.service';
 import { ChatService } from '../../chat/chat.service';
 import { CliRunnerService } from './cli-runner.service';
+import { PromptContextBuilderService } from './prompt-context-builder.service';
 
 type StoredVector = {
   id: string;
@@ -140,9 +141,13 @@ describe('Semantic Retrieval Integration', () => {
       get: jest.fn().mockReturnValue(undefined),
     };
 
+    const promptContextBuilder = new PromptContextBuilderService({
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService);
     const adapter = new ClaudeAdapter(
       cliRunner as unknown as CliRunnerService,
       configService as unknown as ConfigService,
+      promptContextBuilder,
     );
     const question = 'Which database is PostgreSQL in our stack?';
     const context = await contextBuilder.buildContext('session-semantic', question);
@@ -152,8 +157,9 @@ describe('Semantic Retrieval Integration', () => {
     const call = cliRunner.run.mock.calls[0][0] as { args: string[] };
     const promptIndex = call.args.findIndex((arg) => arg === '-p');
     const cliPrompt = call.args[promptIndex + 1];
-    expect(cliPrompt).toContain('SEMANTIC_REFERENCE');
+    expect(cliPrompt).toContain('## conversation');
     expect(cliPrompt).toContain('PostgreSQL');
+    expect(cliPrompt).toContain('## user_intent');
     expect(cliPrompt).toContain(question);
   });
 });

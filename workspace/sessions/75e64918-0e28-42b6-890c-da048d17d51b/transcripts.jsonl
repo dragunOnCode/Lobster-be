@@ -1,0 +1,2 @@
+{"type":"session_created","sessionId":"75e64918-0e28-42b6-890c-da048d17d51b","timestamp":"2026-03-14T10:21:30.450Z"}
+{"type":"message_saved","messageId":"d2be360e-ae01-404a-8eb6-a0adc3ae805a","sessionId":"75e64918-0e28-42b6-890c-da048d17d51b","role":"user","userId":"demo-user","mentionedAgents":["codex"],"content":"@Codex 帮我推荐一些适合个人开发2D俯视角游戏的框架或者技术","contentPreview":"@Codex 帮我推荐一些适合个人开发2D俯视角游戏的框架或者技术","timestamp":"2026-03-14T02:21:30.847Z"}

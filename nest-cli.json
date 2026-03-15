@@ -4,5 +4,8 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true
+  },
+  "watchOptions": {
+    "ignored": ["logs/**", "workspace/**", "dist/**", "node_modules/**", "Frontend/**", "docs/**"]
   }
 }

@@ -25,6 +25,8 @@ export class ShortTermMemoryService {
     this.maxSize = Number(this.configService.getOrThrow<string>('SHORT_TERM_MEMORY_SIZE'));
   }
 
+  // 每次用户发送消息后，保存到短期记忆
+  // 格式为session: json格式的maxSize条消息
   async save(sessionId: string, messages: MemoryMessage[]): Promise<void> {
     const key = this.getKey(sessionId);
     const normalized = messages.slice(-this.maxSize);

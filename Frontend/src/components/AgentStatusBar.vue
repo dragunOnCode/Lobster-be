@@ -47,9 +47,14 @@
           <div class="agent-info">
             <div class="agent-header" v-if="editingSessionId !== sessionInfo.id">
               <span class="agent-name">{{ sessionInfo.title || sessionInfo.id }}</span>
-              <button class="edit-btn" @click.stop="startEdit(sessionInfo.id, sessionInfo.title)">
-                <icon-edit />
-              </button>
+              <div class="agent-actions">
+                <button class="edit-btn" @click.stop="startEdit(sessionInfo.id, sessionInfo.title)">
+                  <icon-edit />
+                </button>
+                <button class="delete-btn" @click.stop="deleteSession(sessionInfo.id, sessionInfo.title)">
+                  <icon-delete />
+                </button>
+              </div>
             </div>
             <div class="agent-header" v-else>
               <a-input
@@ -96,8 +101,10 @@ import {
   IconHistory,
   IconPlus,
   IconMessage,
-  IconEdit
+  IconEdit,
+  IconDelete,
 } from '@arco-design/web-vue/es/icon';
+import { Message, Modal } from '@arco-design/web-vue';
 import { useChatStore } from '../stores/chat';
 
 defineProps<{
@@ -123,6 +130,20 @@ function finishEdit() {
     chat.renameSession(editingSessionId.value, editTitle.value.trim());
   }
   editingSessionId.value = null;
+}
+
+function deleteSession(sessionId: string, title: string) {
+  Modal.warning({
+    title: 'Delete conversation',
+    content: `Delete "${title || sessionId}" permanently? This will clear backend memory and persisted history.`,
+    hideCancel: false,
+    onOk: () => {
+      const ok = chat.deleteSession(sessionId);
+      if (!ok) {
+        Message.warning(chat.connectionError || 'Chat service is not connected');
+      }
+    },
+  });
 }
 </script>
 
@@ -337,6 +358,7 @@ function finishEdit() {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 3px;
+  gap: 8px;
 }
 
 .agent-name {
@@ -370,6 +392,35 @@ function finishEdit() {
 .edit-btn:hover {
   background: rgba(255, 255, 255, 0.2);
   color: var(--text-main);
+}
+
+.agent-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.delete-btn {
+  background: transparent;
+  border: none;
+  color: #c0392b;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  opacity: 0;
+}
+
+.agent-item:hover .delete-btn {
+  opacity: 1;
+}
+
+.delete-btn:hover {
+  background: rgba(255, 77, 79, 0.12);
+  color: #a8071a;
 }
 
 .activity-indicator {

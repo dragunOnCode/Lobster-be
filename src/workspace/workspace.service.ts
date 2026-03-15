@@ -111,6 +111,11 @@ export class WorkspaceService implements OnModuleInit {
     }
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    const sessionRoot = this.getSessionRoot(sessionId);
+    await fs.rm(sessionRoot, { recursive: true, force: true });
+  }
+
   async saveCodeFile(sessionId: string, filePath: string, content: string, author: string): Promise<void> {
     const fullPath = path.join(this.getSessionRoot(sessionId), 'code', filePath);
 

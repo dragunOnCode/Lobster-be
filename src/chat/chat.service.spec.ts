@@ -231,4 +231,45 @@ describe('ChatService', () => {
       }),
     );
   });
+
+  it('deleteSession clears persistence and memory artifacts', async () => {
+    const messageRepo = {
+      delete: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const sessionRepo = {
+      delete: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const workspaceService = {
+      deleteSession: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const shortTermMemoryService = {
+      clear: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const chromaService = {
+      deleteBySessionId: jest.fn().mockResolvedValue(undefined),
+      addDocuments: jest.fn(),
+    } as any;
+    const sharedMemoryService = {
+      clearSession: jest.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const service = new ChatService(
+      messageRepo,
+      sessionRepo,
+      workspaceService,
+      shortTermMemoryService,
+      chromaService,
+      undefined,
+      sharedMemoryService,
+    );
+
+    await service.deleteSession('d290f1ee-6c54-4b01-90e6-d701748f0851');
+
+    expect(messageRepo.delete).toHaveBeenCalledWith({ sessionId: 'd290f1ee-6c54-4b01-90e6-d701748f0851' });
+    expect(sessionRepo.delete).toHaveBeenCalledWith({ id: 'd290f1ee-6c54-4b01-90e6-d701748f0851' });
+    expect(shortTermMemoryService.clear).toHaveBeenCalledWith('d290f1ee-6c54-4b01-90e6-d701748f0851');
+    expect(sharedMemoryService.clearSession).toHaveBeenCalledWith('d290f1ee-6c54-4b01-90e6-d701748f0851');
+    expect(chromaService.deleteBySessionId).toHaveBeenCalledWith('d290f1ee-6c54-4b01-90e6-d701748f0851');
+    expect(workspaceService.deleteSession).toHaveBeenCalledWith('d290f1ee-6c54-4b01-90e6-d701748f0851');
+  });
 });

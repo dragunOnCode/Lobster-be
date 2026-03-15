@@ -214,6 +214,27 @@ export const useChatStore = defineStore('chat', () => {
     socketRef.emit('session:rename', { sessionId, title });
   }
 
+  function deleteSession(sessionId: string): boolean {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      return false;
+    }
+    if (!socketRef || !socketRef.connected) {
+      connectionError.value = 'WebSocket is not connected';
+      return false;
+    }
+
+    pushDebugEvent({
+      direction: 'outbound',
+      event: 'session:delete',
+      payload: { sessionId: normalizedSessionId },
+      sessionId: normalizedSessionId,
+    });
+    socketRef.emit('session:delete', { sessionId: normalizedSessionId });
+    applySessionDeleted(normalizedSessionId);
+    return true;
+  }
+
   function pushDebugEvent(event: Omit<DebugEvent, 'id' | 'timestamp'>) {
     debugEvents.value.unshift({
       ...event,
@@ -311,6 +332,13 @@ export const useChatStore = defineStore('chat', () => {
       sessionHistory.value = sessions ?? [];
       sessionListLoaded.value = true;
       resolveInitialSessionOnEnter();
+    });
+
+    socketRef.on('session:deleted', (payload: { sessionId?: string }) => {
+      if (!payload?.sessionId) {
+        return;
+      }
+      applySessionDeleted(payload.sessionId);
     });
 
     socketRef.on('message:received', (message: ChatMessage) => {
@@ -481,6 +509,20 @@ export const useChatStore = defineStore('chat', () => {
     return JSON.stringify(debugEvents.value, null, 2);
   }
 
+  function applySessionDeleted(sessionId: string) {
+    sessionHistory.value = sessionHistory.value.filter((item) => item.id !== sessionId);
+    if (config.value.sessionId !== sessionId) {
+      return;
+    }
+
+    messages.value = [];
+    streamBuffer.value = {};
+
+    const fallbackSessionId = sessionHistory.value[0]?.id ?? crypto.randomUUID();
+    updateConfig({ sessionId: fallbackSessionId });
+    connect(true);
+  }
+
   return {
     config,
     connectionStatus,
@@ -502,6 +544,7 @@ export const useChatStore = defineStore('chat', () => {
     createNewSession,
     enterChatMode,
     renameSession,
+    deleteSession,
     connect,
     disconnect,
     sendMessage,

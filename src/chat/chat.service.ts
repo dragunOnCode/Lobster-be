@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MessageEntity, SessionEntity } from '../database/entities';
 import { MemoryMessage, ShortTermMemoryService } from '../memory/services/short-term-memory.service';
+import { SharedMemoryService } from '../memory/services/shared-memory.service';
 import { ChromaService } from '../vector/services/chroma.service';
 import { WorkspaceService, SessionInfo } from '../workspace/workspace.service';
 import { ConversationSummaryService } from './conversation-summary.service';
@@ -45,8 +46,10 @@ export class ChatService {
     @Optional() private readonly shortTermMemoryService?: ShortTermMemoryService,
     @Optional() private readonly chromaService?: ChromaService,
     @Optional() private readonly conversationSummaryService?: ConversationSummaryService,
+    @Optional() private readonly sharedMemoryService?: SharedMemoryService,
   ) {}
 
+  // 保存对话消息到数据库/JSONL
   async saveMessage(input: Omit<ChatMessage, 'id' | 'createdAt'>): Promise<ChatMessage> {
     await this.workspaceService?.initializeSession(input.sessionId);
 
@@ -104,8 +107,11 @@ export class ChatService {
       contentPreview: message.content.slice(0, 200),
       timestamp: message.createdAt.toISOString(),
     });
+    // 保存到短期记忆
     await this.tryAppendMemory(message);
+    // 保存向量
     await this.tryAddToVector(message);
+    // 生成摘要
     await this.tryGenerateSummary(message.sessionId);
     return message;
   }
@@ -182,7 +188,7 @@ export class ChatService {
     if (this.workspaceService) {
       return this.workspaceService.listSessions();
     }
-    return Array.from(this.messages.keys()).map(id => ({ id, title: id }));
+    return Array.from(this.messages.keys()).map((id) => ({ id, title: id }));
   }
 
   async renameSession(sessionId: string, title: string): Promise<void> {
@@ -225,6 +231,28 @@ export class ChatService {
 
     await this.tryReplaceMemory(sessionId, normalized);
     await this.tryRebuildVectors(sessionId, normalized);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      return;
+    }
+
+    this.messages.delete(normalizedSessionId);
+
+    if (this.isUuid(normalizedSessionId) && this.sessionRepo) {
+      // Keep a defensive message delete for partially inconsistent DB states.
+      if (this.messageRepo) {
+        await this.messageRepo.delete({ sessionId: normalizedSessionId });
+      }
+      await this.sessionRepo.delete({ id: normalizedSessionId });
+    }
+
+    await this.tryReplaceMemory(normalizedSessionId, []);
+    await this.tryClearSharedMemory(normalizedSessionId);
+    await this.tryRebuildVectors(normalizedSessionId, []);
+    await this.workspaceService?.deleteSession(normalizedSessionId);
   }
 
   private generateId(): string {
@@ -371,6 +399,17 @@ export class ChatService {
       await this.conversationSummaryService.maybeGenerate(sessionId);
     } catch {
       this.logger.warn(`Auto summary failed session=${sessionId}, continue without summary`);
+    }
+  }
+
+  private async tryClearSharedMemory(sessionId: string): Promise<void> {
+    if (!this.sharedMemoryService) {
+      return;
+    }
+    try {
+      await this.sharedMemoryService.clearSession(sessionId);
+    } catch {
+      // ignore redis errors
     }
   }
 
