@@ -11,4 +11,5 @@ Frontend/tsconfig.app.tsbuildinfo
 .gemini
 .playwright-mcp
 logs
-workspace
+workspace/*
+workspace/sessions/*

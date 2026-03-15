@@ -231,7 +231,7 @@ export class ClaudeAdapter implements ILLMAdapter {
     const semanticLimit = Number(this.configService.get<string>('CLAUDE_CONTEXT_SEMANTIC_LIMIT') ?? '3');
     const summaryLimit = Number(this.configService.get<string>('CLAUDE_CONTEXT_SUMMARY_LIMIT') ?? '2');
     const contextTokenBudget = Number(this.configService.get<string>('CLAUDE_CONTEXT_TOKEN_BUDGET') ?? '12000');
-    const lineMaxChars = Number(this.configService.get<string>('CLAUDE_CONTEXT_LINE_MAX_CHARS') ?? '320');
+    const lineMaxChars = Number(this.configService.get<string>('CLAUDE_CONTEXT_LINE_MAX_CHARS') ?? '1200');
     const userPrompt = this.promptContextBuilder.buildUserPrompt(prompt);
     const promptBuilt = this.promptContextBuilder.buildCliPromptWithMetrics(userPrompt, context, {
       historyLimit,

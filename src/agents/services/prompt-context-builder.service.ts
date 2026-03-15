@@ -37,7 +37,7 @@ export class PromptContextBuilderService {
     this.defaultSemanticLimit = Number(this.configService.get<string>('AGENT_CONTEXT_SEMANTIC_LIMIT') ?? '3');
     this.defaultSummaryLimit = Number(this.configService.get<string>('AGENT_CONTEXT_SUMMARY_LIMIT') ?? '2');
     this.defaultTokenBudget = Number(this.configService.get<string>('AGENT_CONTEXT_TOKEN_BUDGET') ?? '12000');
-    this.defaultLineMaxChars = Number(this.configService.get<string>('AGENT_CONTEXT_LINE_MAX_CHARS') ?? '320');
+    this.defaultLineMaxChars = Number(this.configService.get<string>('AGENT_CONTEXT_LINE_MAX_CHARS') ?? '1200');
   }
 
   buildUserPrompt(prompt: string): string {

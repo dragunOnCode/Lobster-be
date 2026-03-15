@@ -31,7 +31,7 @@ export class CodexAdapter implements ILLMAdapter {
     const semanticLimit = Number(this.configService.get<string>('CODEX_CONTEXT_SEMANTIC_LIMIT') ?? '3');
     const summaryLimit = Number(this.configService.get<string>('CODEX_CONTEXT_SUMMARY_LIMIT') ?? '2');
     const tokenBudget = Number(this.configService.get<string>('CODEX_CONTEXT_TOKEN_BUDGET') ?? '12000');
-    const lineMaxChars = Number(this.configService.get<string>('CODEX_CONTEXT_LINE_MAX_CHARS') ?? '320');
+    const lineMaxChars = Number(this.configService.get<string>('CODEX_CONTEXT_LINE_MAX_CHARS') ?? '1200');
     this.status = AgentStatus.BUSY;
 
     try {
