@@ -5,7 +5,7 @@ import { MessageEntity, SessionEntity } from '../database/entities';
 import { MemoryMessage, ShortTermMemoryService } from '../memory/services/short-term-memory.service';
 import { SharedMemoryService } from '../memory/services/shared-memory.service';
 import { ChromaService } from '../vector/services/chroma.service';
-import { WorkspaceService, SessionInfo } from '../workspace/workspace.service';
+import { WorkspaceService, SessionInfo, TranscriptEvent } from '../workspace/workspace.service';
 import { ConversationSummaryService } from './conversation-summary.service';
 
 export interface ChatMessage {
@@ -32,6 +32,12 @@ interface TranscriptMessageEvent {
   contentPreview?: unknown;
   mentionedAgents?: unknown;
   timestamp?: unknown;
+}
+
+interface SessionMessageBoundary {
+  anchor: ChatMessage;
+  kept: ChatMessage[];
+  removed: ChatMessage[];
 }
 
 @Injectable()
@@ -270,6 +276,72 @@ export class ChatService {
     await this.workspaceService?.deleteSession(normalizedSessionId);
   }
 
+  async rewindFromMessage(sessionId: string, messageId: string): Promise<{ removedCount: number }> {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedSessionId || !normalizedMessageId) {
+      throw new Error('sessionId and messageId are required');
+    }
+
+    const fullSessionMessages = await this.getAllSessionMessages(normalizedSessionId);
+    const boundary = this.splitByAnchorMessage(fullSessionMessages, normalizedSessionId, normalizedMessageId);
+    if (!boundary) {
+      throw new Error(`message not found in session: ${normalizedMessageId}`);
+    }
+    if (boundary.anchor.role !== 'user') {
+      throw new Error('rewind is only allowed from user messages');
+    }
+
+    const transcriptSnapshot = await this.readTranscriptSafely(normalizedSessionId);
+    const filteredTranscript = this.filterTranscriptEventsAfterAnchor(transcriptSnapshot, boundary);
+
+    this.logger.log(
+      `rewindFromMessage: session=${normalizedSessionId} anchor=${normalizedMessageId} kept=${boundary.kept.length} removed=${boundary.removed.length}`,
+    );
+
+    /**
+     * 一般做法是按“副作用重要性”分级，不是“一刀切全回滚”。
+      比如，replaceSessionMessages 成功（主事实已写入），tryClearSharedMemory 失败（缓存/派生状态），这种情况不应该回滚 replaceSessionMessages。
+      - 第一步 replaceSessionMessages 成功（主事实已写入）
+      - 第二步 tryClearSharedMemory 失败（缓存/派生状态）
+      
+      在分布式系统里更常见的处理是：
+      1. 主事实优先
+      - 把 DB/主存储当 source of truth。
+      - 主事实成功后，不建议因为缓存失败回滚主事实（否则会放大故障）。
+      2. 派生状态最终一致
+      - 共享内存/缓存/索引清理失败，记为“待修复任务”。
+      - 异步重试（指数退避、有限次数）。
+      - 兜底 TTL + 下次读修复（read-repair）或定时 reconcile。
+      3. 幂等与可观测
+      - 每步幂等（重复清理不出错）。
+      - 打结构化日志和指标（失败率、重试次数、积压量）。
+      - 失败超阈值告警。
+      4. 什么时候才回滚
+      - 只有当后续步骤也是“主事实且强一致”时才考虑整体回滚。
+      - 对缓存/向量索引/transcript 这类派生层，通常不回滚主事实。
+      套到当前回溯功能：
+      - replaceSessionMessages 应定义为主提交点。
+      - tryClearSharedMemory 失败时不该回滚 DB；应进入补偿重试队列。
+      - transcript 如果你把它也视为主审计数据，则可升格为强一致步骤；否则也走最终一致。
+     */
+    try {
+      await this.replaceSessionMessages(normalizedSessionId, boundary.kept);
+      await this.tryClearSharedMemory(normalizedSessionId);
+      if (this.workspaceService) {
+        await this.workspaceService.replaceTranscript(normalizedSessionId, filteredTranscript);
+      }
+    } catch (error) {
+      this.logger.error(
+        `rewindFromMessage: apply failed session=${normalizedSessionId}, trying rollback. reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+      await this.rollbackRewindFailure(normalizedSessionId, fullSessionMessages, transcriptSnapshot);
+      throw error;
+    }
+
+    return { removedCount: boundary.removed.length };
+  }
+
   private generateId(): string {
     return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
@@ -451,6 +523,121 @@ export class ChatService {
         .filter((message): message is ChatMessage => message !== null);
     } catch {
       return [];
+    }
+  }
+
+  private async getAllSessionMessages(sessionId: string): Promise<ChatMessage[]> {
+    if (this.isUuid(sessionId) && this.messageRepo) {
+      const rows = await this.messageRepo.find({
+        where: { sessionId },
+        order: { createdAt: 'ASC' },
+      });
+      return rows
+        .map((row) => ({
+          id: row.id,
+          sessionId: row.sessionId,
+          userId: row.userId ?? undefined,
+          agentId: row.agentId ?? undefined,
+          agentName: row.agentName ?? undefined,
+          role: row.role as ChatMessage['role'],
+          content: row.content,
+          mentionedAgents: row.mentionedAgents ?? [],
+          createdAt: row.createdAt,
+        }))
+        .sort((left, right) => {
+          const delta = left.createdAt.getTime() - right.createdAt.getTime();
+          return delta !== 0 ? delta : left.id.localeCompare(right.id);
+        });
+    }
+
+    const memory = this.messages.get(sessionId) ?? [];
+    if (memory.length > 0) {
+      return [...memory].sort((left, right) => {
+        const delta = left.createdAt.getTime() - right.createdAt.getTime();
+        return delta !== 0 ? delta : left.id.localeCompare(right.id);
+      });
+    }
+
+    return this.tryGetTranscriptMessages(sessionId);
+  }
+
+  private splitByAnchorMessage(
+    fullSessionMessages: ChatMessage[],
+    sessionId: string,
+    messageId: string,
+  ): SessionMessageBoundary | null {
+    const index = fullSessionMessages.findIndex((message) => message.sessionId === sessionId && message.id === messageId);
+    if (index < 0) {
+      return null;
+    }
+
+    return {
+      anchor: fullSessionMessages[index],
+      kept: fullSessionMessages.slice(0, index),
+      removed: fullSessionMessages.slice(index),
+    };
+  }
+
+  private async readTranscriptSafely(sessionId: string): Promise<TranscriptEvent[]> {
+    if (!this.workspaceService) {
+      return [];
+    }
+    try {
+      return await this.workspaceService.readTranscript(sessionId);
+    } catch (error) {
+      this.logger.warn(
+        `rewindFromMessage: failed to read transcript snapshot session=${sessionId}, continue with empty snapshot. reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [];
+    }
+  }
+
+  private filterTranscriptEventsAfterAnchor(
+    events: TranscriptEvent[],
+    boundary: SessionMessageBoundary,
+  ): TranscriptEvent[] {
+    if (events.length === 0 || boundary.removed.length === 0) {
+      return events;
+    }
+
+    const removedIds = new Set(boundary.removed.map((message) => message.id));
+    const anchorTs = boundary.anchor.createdAt.getTime();
+
+    return events.filter((event) => {
+      if (event.type !== 'message_saved') {
+        return true;
+      }
+      const messageId = typeof event.messageId === 'string' ? event.messageId : '';
+      if (messageId && removedIds.has(messageId)) {
+        return false;
+      }
+      if (messageId) {
+        return true;
+      }
+      const timestamp = typeof event.timestamp === 'string' ? event.timestamp : '';
+      const ts = timestamp ? new Date(timestamp).getTime() : Number.NaN;
+      if (!Number.isNaN(ts) && ts >= anchorTs) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private async rollbackRewindFailure(
+    sessionId: string,
+    fullSessionMessages: ChatMessage[],
+    transcriptSnapshot: TranscriptEvent[],
+  ): Promise<void> {
+    try {
+      await this.replaceSessionMessages(sessionId, fullSessionMessages);
+      if (this.workspaceService) {
+        await this.workspaceService.replaceTranscript(sessionId, transcriptSnapshot);
+      }
+      this.logger.warn(`rewindFromMessage: rollback applied for session=${sessionId}`);
+    } catch (rollbackError) {
+      this.logger.error(
+        `rewindFromMessage: rollback failed session=${sessionId}, reason=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+      );
     }
   }
 

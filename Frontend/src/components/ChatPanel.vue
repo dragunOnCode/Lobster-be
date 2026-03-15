@@ -32,8 +32,12 @@
           v-for="(message, index) in chat.messages"
           :key="message.id"
           class="message-wrapper"
-          :class="message.role"
+          :class="[message.role, { 'rewind-eligible': message.role === 'user' }]"
           :style="{ animationDelay: `${Math.min(index * 0.03, 0.3)}s` }"
+          @pointerdown="onMessagePressStart($event, message)"
+          @pointerup="onMessagePressEnd"
+          @pointerleave="onMessagePressEnd"
+          @contextmenu.prevent="onMessageContextMenu($event, message)"
         >
           <div class="message-label">
             <span>{{ message.role === 'user' ? 'Sent' : 'Received' }}</span>
@@ -88,6 +92,14 @@
           <icon-down />
         </button>
       </Transition>
+      <div
+        v-if="rewindMenu.visible"
+        class="rewind-popover"
+        :style="{ top: `${rewindMenu.top}px`, left: `${rewindMenu.left}px` }"
+        @click.stop
+      >
+        <button class="rewind-popover-btn" @click="handleRewind">回溯消息</button>
+      </div>
     </div>
 
     <!-- Input Area -->
@@ -123,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onUpdated, nextTick, watch, onMounted } from 'vue';
+import { computed, ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue';
 import MarkdownIt from 'markdown-it';
 import { Message } from '@arco-design/web-vue';
 import {
@@ -150,6 +162,13 @@ const scrollContainer = ref<HTMLElement | null>(null);
 const inputFocused = ref(false);
 const showScrollBtn = ref(false);
 const isAutoScrolling = ref(false);
+const longPressTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const rewindMenu = ref({
+  visible: false,
+  messageId: '',
+  top: 0,
+  left: 0,
+});
 
 const md = new MarkdownIt({
   html: false,
@@ -162,6 +181,13 @@ const streamDrafts = computed(() =>
     (left, right) => new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime(),
   ),
 );
+const lastMessageSignature = computed(() => {
+  const last = chat.messages[chat.messages.length - 1];
+  if (!last) {
+    return '';
+  }
+  return `${last.id}:${last.createdAt}`;
+});
 
 function renderMarkdown(content: string) {
   return md.render(content);
@@ -194,6 +220,71 @@ function handleRetry(messageId: string) {
   }
 }
 
+function openRewindMenu(event: PointerEvent | MouseEvent, messageId: string) {
+  const offsetX = 8;
+  const offsetY = 8;
+  const maxLeft = Math.max(12, window.innerWidth - 140);
+  const maxTop = Math.max(12, window.innerHeight - 72);
+  rewindMenu.value = {
+    visible: true,
+    messageId,
+    top: Math.min(event.clientY + offsetY, maxTop),
+    left: Math.min(event.clientX + offsetX, maxLeft),
+  };
+}
+
+function closeRewindMenu() {
+  rewindMenu.value.visible = false;
+}
+
+function onMessagePressStart(event: PointerEvent, message: { id: string; role: string }) {
+  if (message.role !== 'user') {
+    return;
+  }
+  onMessagePressEnd();
+  longPressTimer.value = setTimeout(() => {
+    openRewindMenu(event, message.id);
+  }, 420);
+}
+
+function onMessagePressEnd() {
+  if (!longPressTimer.value) {
+    return;
+  }
+  clearTimeout(longPressTimer.value);
+  longPressTimer.value = null;
+}
+
+function onMessageContextMenu(event: MouseEvent, message: { id: string; role: string }) {
+  if (message.role !== 'user') {
+    return;
+  }
+  onMessagePressEnd();
+  openRewindMenu(event, message.id);
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!rewindMenu.value.visible) {
+    return;
+  }
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('.rewind-popover')) {
+    return;
+  }
+  closeRewindMenu();
+}
+
+function handleRewind() {
+  if (!rewindMenu.value.messageId) {
+    return;
+  }
+  const ok = chat.rewindFromMessage(rewindMenu.value.messageId);
+  if (!ok) {
+    Message.warning('回溯失败：仅支持用户消息');
+  }
+  closeRewindMenu();
+}
+
 function scrollToBottom(smooth: boolean = false) {
   if (scrollContainer.value) {
     isAutoScrolling.value = true;
@@ -219,9 +310,21 @@ onMounted(() => {
   if (scrollContainer.value) {
     scrollContainer.value.addEventListener('scroll', checkScrollPosition);
   }
+  document.addEventListener('pointerdown', onDocumentPointerDown);
 });
 
-onUpdated(() => {
+onBeforeUnmount(() => {
+  onMessagePressEnd();
+  if (scrollContainer.value) {
+    scrollContainer.value.removeEventListener('scroll', checkScrollPosition);
+  }
+  document.removeEventListener('pointerdown', onDocumentPointerDown);
+});
+
+watch(lastMessageSignature, (next, prev) => {
+  if (!next || next === prev) {
+    return;
+  }
   nextTick(() => {
     scrollToBottom();
   });
@@ -351,6 +454,10 @@ defineEmits(['open-debug']);
   flex-direction: column;
   width: 100%;
   animation: fadeInUp 0.35s cubic-bezier(0.33, 1, 0.68, 1) backwards;
+}
+
+.message-wrapper.rewind-eligible {
+  cursor: pointer;
 }
 
 /* Message transition animations */
@@ -514,6 +621,31 @@ defineEmits(['open-debug']);
 
 .scroll-bottom-btn:active {
   transform: translateX(-50%) scale(0.95);
+}
+
+.rewind-popover {
+  position: fixed;
+  z-index: 1200;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+}
+
+.rewind-popover-btn {
+  border: none;
+  background: transparent;
+  color: #dc2626;
+  font-weight: 600;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.rewind-popover-btn:hover {
+  background: rgba(220, 38, 38, 0.1);
 }
 
 /* Fade transition */

@@ -40,6 +40,23 @@ const socket = io('http://localhost:3000/chat', {
 
 ---
 
+### `message:rewind`
+
+回溯指定用户消息（删除该消息及其后续消息）。
+
+**Payload**:
+
+```json
+{
+  "messageId": "回溯起点消息ID（必须是用户消息）",
+  "sessionId": "会话ID"
+}
+```
+
+**返回**: `{ "ok": true }` 或 `{ "ok": false }`
+
+---
+
 ## 服务端 → 客户端事件
 
 ### 连接 / 会话管理
@@ -59,6 +76,9 @@ const socket = io('http://localhost:3000/chat', {
 | `message:received` | 新消息已保存（用户消息或 Agent 回复） | `ChatMessage` |
 | `message:error` | 消息发送失败 | `{ message }` |
 | `message:mention` | 消息中包含 @提及 | `{ messageId, mentionedAgents, sessionId }` |
+| `message:rewind:accepted` | 服务端已接受回溯请求（异步处理中） | `{ sessionId, messageId, timestamp }` |
+| `message:rewind:done` | 回溯处理完成，服务端已同步最新历史 | `{ sessionId, messageId, removedCount, timestamp }` |
+| `message:rewind:error` | 回溯处理失败 | `{ sessionId, messageId, error, timestamp }` |
 
 ### Agent 决策与响应
 

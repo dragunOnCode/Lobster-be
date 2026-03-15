@@ -379,6 +379,10 @@ export const useChatStore = defineStore('chat', () => {
       connectionError.value = payload?.message || 'message send failed';
     });
 
+    socketRef.on('message:rewind:error', (payload: { error?: string }) => {
+      connectionError.value = payload?.error || 'message rewind failed';
+    });
+
     socketRef.on('agent:skip', (payload: { agentId: string; agentName: string; reason?: string }) => {
       upsertAgentState(payload.agentId, payload.agentName, 'skip', payload.reason);
     });
@@ -499,6 +503,53 @@ export const useChatStore = defineStore('chat', () => {
     return true;
   }
 
+  function rewindFromMessage(messageId: string): boolean {
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      return false;
+    }
+
+    const currentSessionId = config.value.sessionId;
+    const anchorIndex = messages.value.findIndex(
+      (message) =>
+        message.sessionId === currentSessionId &&
+        message.id === normalizedMessageId &&
+        message.role === 'user',
+    );
+    if (anchorIndex < 0) {
+      return false;
+    }
+
+    const removedMessages = messages.value.slice(anchorIndex);
+    const removedIds = new Set(removedMessages.map((message) => message.id));
+
+    messages.value = messages.value.slice(0, anchorIndex);
+    streamBuffer.value = Object.fromEntries(
+      Object.entries(streamBuffer.value).filter(([, item]) => item.sessionId !== currentSessionId),
+    );
+    errorMessageIds.value = new Set([...errorMessageIds.value].filter((id) => !removedIds.has(id)));
+
+    const payload = {
+      messageId: normalizedMessageId,
+      sessionId: currentSessionId,
+    };
+
+    pushDebugEvent({
+      direction: 'outbound',
+      event: 'message:rewind',
+      payload,
+      sessionId: currentSessionId,
+    });
+
+    if (!socketRef || !socketRef.connected) {
+      connectionError.value = 'WebSocket is not connected';
+      return true;
+    }
+
+    socketRef.emit('message:rewind', payload);
+    return true;
+  }
+
   function sendMessage(content: string): boolean {
     if (!content.trim()) {
       return false;
@@ -577,6 +628,7 @@ export const useChatStore = defineStore('chat', () => {
     disconnect,
     sendMessage,
     retryMessage,
+    rewindFromMessage,
     exportEvents,
   };
 });

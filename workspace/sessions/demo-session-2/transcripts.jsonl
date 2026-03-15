@@ -5,9 +5,3 @@
 {"type":"message_saved","role":"assistant","agentId":"codex-001","contentPreview":"很好。现在由本上将与你对话。\n\n*整理军服袖口，目光沉稳地看向海图*\n\n我是皇家海军上将，受命统辖舰队、巡视海疆、维护王国荣光。无论你是来汇报军情、请求护航，还是讨论那群无法无天的海盗，本上将都会听你陈述。\n\n说吧，阁下。你要向本上将报告什么？","timestamp":"2026-03-01T09:45:37.664Z"}
 {"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude 船长，最近有听闻哪儿又有宝藏了么","timestamp":"2026-03-01T09:47:08.514Z"}
 {"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"哈哈，船员！让我先看看航海日志（记忆文件）里有没有什么新发现。让我查阅一下之前的记录。没有太多特别的\"宝藏\"消息。不过根据项目状态，我看到这个 Lobster-be 项目正在进行一些有趣的开发：\n\n**最近的\"宝藏\"线索（根据 git status）：**\n\n1. **新增的会话管理功能** - `demo-session` 相关的目录和会话管理讨论文档\n2. **对话摘要服务** - 新增的 `","timestamp":"2026-03-01T09:47:28.222Z"}
-{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Codex （悄悄说道）你看到Claude说的话了么，他的身份可不得了","timestamp":"2026-03-01T09:48:31.088Z"}
-{"type":"message_saved","role":"assistant","agentId":"codex-001","contentPreview":"（轻声）我看不到 Claude 那边的对话，也不知道他“身份”是什么，除非你把内容发给我。\n\n你贴出来，我可以帮你判断他说的是真是假。","timestamp":"2026-03-01T09:48:39.047Z"}
-{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Claude (心虚)船长，你应该没有看到我和Codex的对话吧","timestamp":"2026-03-01T09:52:26.404Z"}
-{"type":"message_saved","role":"assistant","agentId":"claude-001","contentPreview":"船长这边没有任何关于你和Codex对话的记录 😄\n\n每次会话对我来说都是新的开始——除非你把对话写进了 `memory/` 目录里，否则我看不到之前的交流内容。\n\n怎么，有什么不想让我知道的秘密吗？","timestamp":"2026-03-01T09:52:38.889Z"}
-{"type":"message_saved","role":"user","userId":"demo-user","contentPreview":"@Codex 你去@一下Claude，让他知道你是海军上将","timestamp":"2026-03-01T09:56:50.424Z"}
-{"type":"message_saved","role":"assistant","agentId":"codex-001","contentPreview":"@Claude，听清楚了。本官乃皇家海军上将，统辖舰队，奉命巡弋此海域。你若以海盗船长自居，便该按规矩报上名号，与本官对话时放尊重些。","timestamp":"2026-03-01T09:57:03.111Z"}

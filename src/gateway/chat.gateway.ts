@@ -26,6 +26,11 @@ interface RetryMessagePayload {
   sessionId: string;
 }
 
+interface RewindMessagePayload {
+  messageId: string;
+  sessionId: string;
+}
+
 interface RenameSessionPayload {
   sessionId: string;
   title: string;
@@ -239,6 +244,58 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
       this.logger.error(`langgraph retry failed, session=${sessionId}, reason=${reason}`);
     }
+
+    return { ok: true };
+  }
+
+  @SubscribeMessage('message:rewind')
+  handleRewind(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: RewindMessagePayload,
+  ): { ok: boolean } {
+    if (!payload?.messageId?.trim() || !payload?.sessionId?.trim()) {
+      client.emit('message:error', { message: 'messageId 和 sessionId 不能为空' });
+      return { ok: false };
+    }
+
+    const sessionId = payload.sessionId.trim();
+    const messageId = payload.messageId.trim();
+    const userId = this.getQueryValue(client, 'userId') ?? 'anonymous';
+
+    this.logger.log(`rewind requested session=${sessionId} message=${messageId} by user=${userId}`);
+    client.emit('message:rewind:accepted', {
+      sessionId,
+      messageId,
+      timestamp: new Date().toISOString(),
+    });
+
+    void this.chatService
+      .rewindFromMessage(sessionId, messageId)
+      .then(async ({ removedCount }) => {
+        this.logger.log(
+          `rewind completed session=${sessionId} message=${messageId} removed=${removedCount} by user=${userId}`,
+        );
+        const latestHistory = await this.chatService.getRecentMessages(sessionId, 200);
+        this.sessionManager.broadcastToSession(sessionId, 'chat:history', latestHistory);
+        this.sessionManager.broadcastToSession(sessionId, 'message:rewind:done', {
+          sessionId,
+          messageId,
+          removedCount,
+          timestamp: new Date().toISOString(),
+        });
+      })
+      .catch((error) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `rewind failed session=${sessionId} message=${messageId} by user=${userId}, reason=${reason}`,
+        );
+        this.sessionManager.broadcastToSession(sessionId, 'message:rewind:error', {
+          sessionId,
+          messageId,
+          error: reason,
+          timestamp: new Date().toISOString(),
+        });
+      });
 
     return { ok: true };
   }

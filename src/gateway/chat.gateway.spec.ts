@@ -1,5 +1,4 @@
 import { ChatService } from '../chat/chat.service';
-import { LangGraphCheckpointerService } from '../langgraph/services/langgraph-checkpointer.service';
 import { LangGraphOrchestratorService } from '../langgraph/services/langgraph-orchestrator.service';
 import { ChatGateway } from './chat.gateway';
 import { MessageRouter } from './message.router';
@@ -17,7 +16,6 @@ describe('ChatGateway', () => {
   let sessionManager: SessionManager;
   let chatService: ChatService;
   let langGraphOrchestrator: LangGraphOrchestratorService;
-  let langGraphCheckpointer: LangGraphCheckpointerService;
 
   beforeEach(() => {
     sessionManager = new SessionManager();
@@ -76,18 +74,11 @@ describe('ChatGateway', () => {
         ]),
       ),
     } as unknown as LangGraphOrchestratorService;
-    langGraphCheckpointer = {
-      getCheckpointer: jest.fn().mockResolvedValue({
-        deleteThread: jest.fn().mockResolvedValue(undefined),
-      }),
-    } as unknown as LangGraphCheckpointerService;
-
     gateway = new ChatGateway(
       sessionManager,
       new MessageRouter(),
       chatService,
       langGraphOrchestrator,
-      langGraphCheckpointer,
       new LangGraphEventBridgeService(),
     );
   });
@@ -276,5 +267,35 @@ describe('ChatGateway', () => {
         sessionId: 's1',
       }),
     );
+  });
+
+  it('should accept rewind request and trigger async rewind', async () => {
+    const emit = jest.fn();
+    const client = {
+      id: 'client-rewind',
+      handshake: { query: { sessionId: 's1', userId: 'u1' } },
+      emit,
+      join: jest.fn(),
+      disconnect: jest.fn(),
+    } as any;
+
+    const rewindSpy = jest.spyOn(chatService, 'rewindFromMessage').mockResolvedValue({ removedCount: 2 });
+    jest.spyOn(chatService, 'getRecentMessages').mockResolvedValue([]);
+
+    await gateway.handleConnection(client);
+    const result = gateway.handleRewind(client, { sessionId: 's1', messageId: 'm1' });
+
+    expect(result.ok).toBe(true);
+    expect(emit).toHaveBeenCalledWith(
+      'message:rewind:accepted',
+      expect.objectContaining({
+        sessionId: 's1',
+        messageId: 'm1',
+      }),
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rewindSpy).toHaveBeenCalledWith('s1', 'm1');
   });
 });
