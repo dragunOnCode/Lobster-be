@@ -31,6 +31,10 @@ interface RenameSessionPayload {
   title: string;
 }
 
+interface DeleteSessionPayload {
+  sessionId: string;
+}
+
 @UseFilters(new WsExceptionFilter())
 @WebSocketGateway({
   namespace: '/chat',
@@ -253,6 +257,28 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const sessions = await this.chatService.listSessions();
     this.sessionManager.broadcastToAll('session:list', sessions);
+    return { ok: true };
+  }
+
+  @SubscribeMessage('session:delete')
+  async handleDeleteSession(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: DeleteSessionPayload,
+  ): Promise<{ ok: boolean }> {
+    if (!payload?.sessionId?.trim()) {
+      client.emit('message:error', { message: 'sessionId 不能为空' });
+      return { ok: false };
+    }
+
+    const sessionId = payload.sessionId.trim();
+    await this.chatService.deleteSession(sessionId);
+
+    const sessions = await this.chatService.listSessions();
+    this.sessionManager.broadcastToAll('session:list', sessions);
+    this.sessionManager.broadcastToAll('session:deleted', {
+      sessionId,
+      timestamp: new Date().toISOString(),
+    });
     return { ok: true };
   }
 

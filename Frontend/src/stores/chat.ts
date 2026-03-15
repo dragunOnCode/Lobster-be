@@ -65,6 +65,8 @@ export interface SessionInfo {
   title: string;
 }
 
+const NEW_SESSION_DEFAULT_TITLE = '新对话';
+
 export const useChatStore = defineStore('chat', () => {
   const config = ref<ConnectionConfig>({
     baseUrl: getDefaultBaseUrl(),
@@ -133,6 +135,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function createNewSession() {
     const newSessionId = crypto.randomUUID();
+    ensureSessionInHistory(newSessionId, NEW_SESSION_DEFAULT_TITLE);
     changeSession(newSessionId);
     return newSessionId;
   }
@@ -276,6 +279,28 @@ export const useChatStore = defineStore('chat', () => {
     sortMessages();
   }
 
+  function ensureSessionInHistory(sessionId: string, title = NEW_SESSION_DEFAULT_TITLE) {
+    const normalizedId = sessionId.trim();
+    if (!normalizedId) {
+      return;
+    }
+
+    const index = sessionHistory.value.findIndex((item) => item.id === normalizedId);
+    if (index >= 0) {
+      const existing = sessionHistory.value[index];
+      const nextTitle = existing.title?.trim() ? existing.title : title;
+      const merged = { ...existing, title: nextTitle };
+      sessionHistory.value.splice(index, 1);
+      sessionHistory.value.unshift(merged);
+      return;
+    }
+
+    sessionHistory.value.unshift({
+      id: normalizedId,
+      title,
+    });
+  }
+
   function clearStreamDraft(sessionId: string, agentId?: string) {
     if (!agentId) {
       return;
@@ -329,7 +354,8 @@ export const useChatStore = defineStore('chat', () => {
     });
 
     socketRef.on('session:list', (sessions: SessionInfo[]) => {
-      sessionHistory.value = sessions ?? [];
+      const next = sessions ?? [];
+      sessionHistory.value = next;
       sessionListLoaded.value = true;
       resolveInitialSessionOnEnter();
     });
@@ -477,6 +503,8 @@ export const useChatStore = defineStore('chat', () => {
     if (!content.trim()) {
       return false;
     }
+
+    ensureSessionInHistory(config.value.sessionId);
 
     if (!socketRef || !socketRef.connected) {
       connectionError.value = 'WebSocket is not connected';

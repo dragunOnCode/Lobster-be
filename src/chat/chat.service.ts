@@ -47,13 +47,25 @@ export class ChatService {
     @Optional() private readonly chromaService?: ChromaService,
     @Optional() private readonly conversationSummaryService?: ConversationSummaryService,
     @Optional() private readonly sharedMemoryService?: SharedMemoryService,
-  ) {}
+  ) {
+    // 调试日志：检查依赖注入状态
+    this.logger.log(`Dependency injection status:`);
+    this.logger.log(`  - messageRepo: ${this.messageRepo ? 'OK' : 'MISSING'}`);
+    this.logger.log(`  - sessionRepo: ${this.sessionRepo ? 'OK' : 'MISSING'}`);
+    this.logger.log(`  - workspaceService: ${this.workspaceService ? 'OK' : 'MISSING'}`);
+    this.logger.log(`  - shortTermMemoryService: ${this.shortTermMemoryService ? 'OK' : 'MISSING'}`);
+    this.logger.log(`  - chromaService: ${this.chromaService ? 'OK' : 'MISSING'}`);
+    this.logger.log(`  - conversationSummaryService: ${this.conversationSummaryService ? 'OK' : 'MISSING'}`);
+    this.logger.log(`  - sharedMemoryService: ${this.sharedMemoryService ? 'OK' : 'MISSING'}`);
+  }
 
   // 保存对话消息到数据库/JSONL
   async saveMessage(input: Omit<ChatMessage, 'id' | 'createdAt'>): Promise<ChatMessage> {
+    this.logger.log(`saveMessage: START sessionId=${input.sessionId}, role=${input.role}, contentPreview=${input.content.slice(0, 50)}...`);
     await this.workspaceService?.initializeSession(input.sessionId);
 
     const persistable = this.isUuid(input.sessionId) && !!this.messageRepo;
+    this.logger.debug(`saveMessage: persistable=${persistable}, isUuid=${this.isUuid(input.sessionId)}, hasRepo=${!!this.messageRepo}`);
     let message: ChatMessage;
     if (persistable) {
       await this.ensureSessionExists(input.sessionId);
@@ -107,12 +119,15 @@ export class ChatService {
       contentPreview: message.content.slice(0, 200),
       timestamp: message.createdAt.toISOString(),
     });
+    this.logger.log(`saveMessage: transcript appended, calling tryAppendMemory for message=${message.id}`);
     // 保存到短期记忆
     await this.tryAppendMemory(message);
+    this.logger.log(`saveMessage: tryAppendMemory completed, calling tryAddToVector for message=${message.id}`);
     // 保存向量
     await this.tryAddToVector(message);
     // 生成摘要
     await this.tryGenerateSummary(message.sessionId);
+    this.logger.log(`saveMessage: COMPLETE message=${message.id} session=${message.sessionId}`);
     return message;
   }
 
@@ -285,39 +300,51 @@ export class ChatService {
   }
 
   private async tryAppendMemory(message: ChatMessage): Promise<void> {
+    this.logger.log(`tryAppendMemory: START message=${message.id} session=${message.sessionId}`);
     if (!this.shortTermMemoryService) {
+      this.logger.warn(`tryAppendMemory: shortTermMemoryService is UNDEFINED, skipping Redis cache`);
       return;
     }
     try {
-      await this.shortTermMemoryService.append(message.sessionId, this.toMemoryMessage(message));
-    } catch {
-      // Redis 不可用时保持主流程可用，降级到 DB/内存
+      const memoryMessage = this.toMemoryMessage(message);
+      this.logger.debug(`tryAppendMemory: calling shortTermMemoryService.append, message=${JSON.stringify(memoryMessage).slice(0, 200)}`);
+      await this.shortTermMemoryService.append(message.sessionId, memoryMessage);
+      this.logger.log(`tryAppendMemory: SUCCESS session=${message.sessionId} message=${message.id}`);
+    } catch (error) {
+      this.logger.error(`tryAppendMemory: FAILED session=${message.sessionId} error=${error}`);
     }
   }
 
   private async tryGetMemory(sessionId: string): Promise<ChatMessage[]> {
     if (!this.shortTermMemoryService) {
+      this.logger.warn(`tryGetMemory: shortTermMemoryService is UNDEFINED`);
       return [];
     }
     try {
+      this.logger.debug(`tryGetMemory: fetching session=${sessionId}`);
       const list = await this.shortTermMemoryService.get(sessionId);
+      this.logger.log(`tryGetMemory: SUCCESS session=${sessionId} count=${list.length}`);
       return list.map((item) => this.fromMemoryMessage(item));
-    } catch {
+    } catch (error) {
+      this.logger.error(`tryGetMemory: FAILED session=${sessionId} error=${error}`);
       return [];
     }
   }
 
   private async trySaveMemory(sessionId: string, messages: ChatMessage[]): Promise<void> {
     if (!this.shortTermMemoryService) {
+      this.logger.warn(`trySaveMemory: shortTermMemoryService is UNDEFINED`);
       return;
     }
     try {
+      this.logger.debug(`trySaveMemory: saving session=${sessionId} count=${messages.length}`);
       await this.shortTermMemoryService.save(
         sessionId,
         messages.map((item) => this.toMemoryMessage(item)),
       );
-    } catch {
-      // ignore redis errors
+      this.logger.log(`trySaveMemory: SUCCESS session=${sessionId} count=${messages.length}`);
+    } catch (error) {
+      this.logger.error(`trySaveMemory: FAILED session=${sessionId} error=${error}`);
     }
   }
 

@@ -259,8 +259,6 @@ export class ClaudeAdapter implements ILLMAdapter {
       '--output-format',
       'stream-json',
       '--verbose',
-      '--permission-mode',
-      'bypassPermissions',
       '--tools',
       '',
       '-p',

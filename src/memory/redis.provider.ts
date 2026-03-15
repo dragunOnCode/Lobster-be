@@ -1,10 +1,12 @@
-import { Provider } from '@nestjs/common';
+import { Provider, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
 export type RedisClient = Redis;
+
+const logger = new Logger('RedisProvider');
 
 export const redisProvider: Provider = {
   provide: REDIS_CLIENT,
@@ -15,7 +17,9 @@ export const redisProvider: Provider = {
     const password = configService.get<string>('REDIS_PASSWORD') || undefined;
     const db = Number(configService.get<string>('REDIS_DB') ?? '0');
 
-    return new Redis({
+    logger.log(`Creating Redis connection: host=${host}, port=${port}, db=${db}, hasPassword=${!!password}`);
+
+    const client = new Redis({
       host,
       port,
       password,
@@ -24,5 +28,15 @@ export const redisProvider: Provider = {
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
     });
+
+    client.on('connect', () => {
+      logger.log(`Redis connected: host=${host}, port=${port}, db=${db}`);
+    });
+
+    client.on('error', (err) => {
+      logger.error(`Redis error: ${err}`);
+    });
+
+    return client;
   },
 };
