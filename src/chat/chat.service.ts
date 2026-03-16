@@ -7,7 +7,10 @@ import { SharedMemoryService } from '../memory/services/shared-memory.service';
 import { ChromaService } from '../vector/services/chroma.service';
 import { WorkspaceService, SessionInfo, TranscriptEvent } from '../workspace/workspace.service';
 import { ConversationSummaryService } from './conversation-summary.service';
-import { RewindCompensationQueueService } from './rewind-compensation-queue.service';
+import {
+  PersistMessagePayload,
+  RewindCompensationQueueService,
+} from './rewind-compensation-queue.service';
 
 export interface ChatMessage {
   id: string;
@@ -70,6 +73,29 @@ export class ChatService {
 
   // 保存对话消息到数据库/JSONL
   async saveMessage(input: Omit<ChatMessage, 'id' | 'createdAt'>): Promise<ChatMessage> {
+    return this.saveMessageInternal(input, 'service');
+  }
+
+  async persistMessageFromQueue(payload: PersistMessagePayload): Promise<void> {
+    await this.saveMessageInternal(
+      {
+        sessionId: payload.sessionId,
+        userId: payload.userId,
+        agentId: payload.agentId,
+        agentName: payload.agentName,
+        role: payload.role,
+        content: payload.content,
+        mentionedAgents: payload.mentionedAgents,
+      },
+      'worker',
+    );
+  }
+
+  // 保存对话消息到数据库/JSONL
+  private async saveMessageInternal(
+    input: Omit<ChatMessage, 'id' | 'createdAt'>,
+    attemptSource: 'service' | 'worker',
+  ): Promise<ChatMessage> {
     this.logger.log(`saveMessage: START sessionId=${input.sessionId}, role=${input.role}, contentPreview=${input.content.slice(0, 50)}...`);
     await this.workspaceService?.initializeSession(input.sessionId);
 
@@ -77,32 +103,47 @@ export class ChatService {
     this.logger.debug(`saveMessage: persistable=${persistable}, isUuid=${this.isUuid(input.sessionId)}, hasRepo=${!!this.messageRepo}`);
     let message: ChatMessage;
     if (persistable) {
-      await this.ensureSessionExists(input.sessionId);
+      try {
+        await this.withRetry(
+          `save-message-ensure-session:${input.sessionId}`,
+          () => this.ensureSessionExists(input.sessionId),
+          { attempts: 3, baseDelayMs: 120 },
+        );
 
-      const userId = input.userId && this.isUuid(input.userId) ? input.userId : null;
-      const entity = this.messageRepo!.create({
-        sessionId: input.sessionId,
-        userId,
-        agentId: input.agentId ?? null,
-        agentName: input.agentName ?? null,
-        role: input.role,
-        content: input.content,
-        mentionedAgents: input.mentionedAgents ?? [],
-        metadata: !userId && input.userId ? { externalUserId: input.userId } : null,
-      });
+        const userId = input.userId && this.isUuid(input.userId) ? input.userId : null;
+        const entity = this.messageRepo!.create({
+          sessionId: input.sessionId,
+          userId,
+          agentId: input.agentId ?? null,
+          agentName: input.agentName ?? null,
+          role: input.role,
+          content: input.content,
+          mentionedAgents: input.mentionedAgents ?? [],
+          metadata: !userId && input.userId ? { externalUserId: input.userId } : null,
+        });
 
-      const saved = await this.messageRepo!.save(entity);
-      message = {
-        id: saved.id,
-        sessionId: saved.sessionId,
-        userId: saved.userId ?? input.userId,
-        agentId: saved.agentId ?? undefined,
-        agentName: saved.agentName ?? undefined,
-        role: saved.role as ChatMessage['role'],
-        content: saved.content,
-        mentionedAgents: saved.mentionedAgents ?? [],
-        createdAt: saved.createdAt,
-      };
+        const saved = await this.withRetry(
+          `save-message-row:${input.sessionId}`,
+          () => this.messageRepo!.save(entity),
+          { attempts: 3, baseDelayMs: 120 },
+        );
+        message = {
+          id: saved.id,
+          sessionId: saved.sessionId,
+          userId: saved.userId ?? input.userId,
+          agentId: saved.agentId ?? undefined,
+          agentName: saved.agentName ?? undefined,
+          role: saved.role as ChatMessage['role'],
+          content: saved.content,
+          mentionedAgents: saved.mentionedAgents ?? [],
+          createdAt: saved.createdAt,
+        };
+      } catch (error) {
+        if (attemptSource === 'service') {
+          await this.enqueuePersistMessageCompensation(input, 'service');
+        }
+        throw error;
+      }
     } else {
       message = {
         ...input,
@@ -115,19 +156,26 @@ export class ChatService {
       this.messages.set(input.sessionId, sessionMessages);
     }
 
-    await this.workspaceService?.appendTranscript(input.sessionId, {
-      type: 'message_saved',
-      messageId: message.id,
-      sessionId: message.sessionId,
-      role: message.role,
-      userId: message.userId,
-      agentId: message.agentId,
-      agentName: message.agentName,
-      mentionedAgents: message.mentionedAgents ?? [],
-      content: message.content,
-      contentPreview: message.content.slice(0, 200),
-      timestamp: message.createdAt.toISOString(),
-    });
+    if (this.workspaceService) {
+      await this.withRetry(
+        `save-message-transcript:${input.sessionId}`,
+        () =>
+          this.workspaceService!.appendTranscript(input.sessionId, {
+            type: 'message_saved',
+            messageId: message.id,
+            sessionId: message.sessionId,
+            role: message.role,
+            userId: message.userId,
+            agentId: message.agentId,
+            agentName: message.agentName,
+            mentionedAgents: message.mentionedAgents ?? [],
+            content: message.content,
+            contentPreview: message.content.slice(0, 200),
+            timestamp: message.createdAt.toISOString(),
+          }),
+        { attempts: 3, baseDelayMs: 120 },
+      );
+    }
     this.logger.log(`saveMessage: transcript appended, calling tryAppendMemory for message=${message.id}`);
     // 保存到短期记忆
     await this.tryAppendMemory(message);
@@ -236,23 +284,36 @@ export class ChatService {
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
 
     if (this.isUuid(sessionId) && this.messageRepo) {
-      await this.ensureSessionExists(sessionId);
-      await this.messageRepo.delete({ sessionId });
+      await this.withRetry(
+        `replace-main-ensure-session:${sessionId}`,
+        () => this.ensureSessionExists(sessionId),
+        { attempts: 3, baseDelayMs: 120 },
+      );
+      await this.withRetry(
+        `replace-main-delete-session-messages:${sessionId}`,
+        () => this.messageRepo!.delete({ sessionId }),
+        { attempts: 3, baseDelayMs: 120 },
+      );
 
       if (normalized.length > 0) {
-        await this.messageRepo.insert(
-          normalized.map((message) => ({
-            id: message.id,
-            sessionId: message.sessionId,
-            userId: message.userId && this.isUuid(message.userId) ? message.userId : null,
-            agentId: message.agentId ?? null,
-            agentName: message.agentName ?? null,
-            role: message.role,
-            content: message.content,
-            mentionedAgents: message.mentionedAgents ?? [],
-            metadata: !message.userId || this.isUuid(message.userId) ? null : { externalUserId: message.userId },
-            createdAt: message.createdAt,
-          })),
+        await this.withRetry(
+          `replace-main-insert-session-messages:${sessionId}`,
+          () =>
+            this.messageRepo!.insert(
+              normalized.map((message) => ({
+                id: message.id,
+                sessionId: message.sessionId,
+                userId: message.userId && this.isUuid(message.userId) ? message.userId : null,
+                agentId: message.agentId ?? null,
+                agentName: message.agentName ?? null,
+                role: message.role,
+                content: message.content,
+                mentionedAgents: message.mentionedAgents ?? [],
+                metadata: !message.userId || this.isUuid(message.userId) ? null : { externalUserId: message.userId },
+                createdAt: message.createdAt,
+              })),
+            ),
+          { attempts: 3, baseDelayMs: 120 },
         );
       }
     } else {
@@ -262,6 +323,14 @@ export class ChatService {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
+    await this.deleteSessionInternal(sessionId, 'service');
+  }
+
+  async retryDeleteSessionFromQueue(sessionId: string): Promise<void> {
+    await this.deleteSessionInternal(sessionId, 'worker');
+  }
+
+  private async deleteSessionInternal(sessionId: string, attemptSource: 'service' | 'worker'): Promise<void> {
     const normalizedSessionId = sessionId.trim();
     if (!normalizedSessionId) {
       return;
@@ -269,20 +338,27 @@ export class ChatService {
 
     this.messages.delete(normalizedSessionId);
 
-    if (this.isUuid(normalizedSessionId) && this.sessionRepo) {
-      // Keep a defensive message delete for partially inconsistent DB states.
-      if (this.messageRepo) {
+    try {
+      if (this.isUuid(normalizedSessionId) && this.sessionRepo) {
+        // Keep a defensive message delete for partially inconsistent DB states.
+        if (this.messageRepo) {
+          await this.withRetry(
+            `delete-session-messages:${normalizedSessionId}`,
+            () => this.messageRepo!.delete({ sessionId: normalizedSessionId }),
+            { attempts: 3, baseDelayMs: 120 },
+          );
+        }
         await this.withRetry(
-          `delete-session-messages:${normalizedSessionId}`,
-          () => this.messageRepo!.delete({ sessionId: normalizedSessionId }),
+          `delete-session-row:${normalizedSessionId}`,
+          () => this.sessionRepo!.delete({ id: normalizedSessionId }),
           { attempts: 3, baseDelayMs: 120 },
         );
       }
-      await this.withRetry(
-        `delete-session-row:${normalizedSessionId}`,
-        () => this.sessionRepo!.delete({ id: normalizedSessionId }),
-        { attempts: 3, baseDelayMs: 120 },
-      );
+    } catch (error) {
+      if (attemptSource === 'service') {
+        await this.enqueueDeleteSessionCompensation(normalizedSessionId, 'service');
+      }
+      throw error;
     }
 
     await this.tryReplaceMemory(normalizedSessionId, []);
@@ -291,7 +367,11 @@ export class ChatService {
     await this.workspaceService?.deleteSession(normalizedSessionId);
   }
 
-  async rewindFromMessage(sessionId: string, messageId: string): Promise<{ removedCount: number }> {
+  async rewindFromMessage(
+    sessionId: string,
+    messageId: string,
+    attemptSource: 'service' | 'worker' = 'service',
+  ): Promise<{ removedCount: number }> {
     const normalizedSessionId = sessionId.trim();
     const normalizedMessageId = messageId.trim();
     if (!normalizedSessionId || !normalizedMessageId) {
@@ -314,11 +394,18 @@ export class ChatService {
       `rewindFromMessage: session=${normalizedSessionId} anchor=${normalizedMessageId} kept=${boundary.kept.length} removed=${boundary.removed.length}`,
     );
 
-    await this.withRetry(
-      `rewind-main-fact:${normalizedSessionId}:${normalizedMessageId}`,
-      () => this.replaceSessionMessagesMainFact(normalizedSessionId, boundary.kept),
-      { attempts: 3, baseDelayMs: 150 },
-    );
+    try {
+      await this.withRetry(
+        `rewind-main-fact:${normalizedSessionId}:${normalizedMessageId}`,
+        () => this.replaceSessionMessagesMainFact(normalizedSessionId, boundary.kept),
+        { attempts: 3, baseDelayMs: 150 },
+      );
+    } catch (error) {
+      if (attemptSource === 'service') {
+        await this.enqueueRewindMainFactCompensation(normalizedSessionId, normalizedMessageId, 'service');
+      }
+      throw error;
+    }
 
     try {
       await this.withRetry(
@@ -327,7 +414,7 @@ export class ChatService {
           this.rebuildDerivedStateAfterRewind(
             normalizedSessionId,
             normalizedMessageId,
-            'service',
+            attemptSource,
             boundary.kept,
             filteredTranscript,
           ),
@@ -338,10 +425,18 @@ export class ChatService {
       this.logger.error(
         `rewindFromMessage: derived sync failed after main commit, enqueue compensation. session=${normalizedSessionId} anchor=${normalizedMessageId} reason=${reason}`,
       );
-      await this.enqueueDerivedSyncCompensation(normalizedSessionId, normalizedMessageId, 'service');
+      if (attemptSource === 'service') {
+        await this.enqueueDerivedSyncCompensation(normalizedSessionId, normalizedMessageId, 'service');
+      } else {
+        throw error;
+      }
     }
 
     return { removedCount: boundary.removed.length };
+  }
+
+  async retryRewindFromQueue(sessionId: string, messageId: string): Promise<{ removedCount: number }> {
+    return this.rewindFromMessage(sessionId, messageId, 'worker');
   }
 
   async rebuildDerivedStateAfterRewind(
@@ -727,6 +822,61 @@ export class ChatService {
     await this.rewindCompensationQueue.enqueueDerivedSync({
       sessionId,
       anchorMessageId,
+      requestedAt: new Date().toISOString(),
+      attemptSource,
+    });
+  }
+
+  private async enqueueRewindMainFactCompensation(
+    sessionId: string,
+    anchorMessageId: string,
+    attemptSource: 'service' | 'worker',
+  ): Promise<void> {
+    if (!this.rewindCompensationQueue) {
+      this.logger.error(
+        `rewindFromMessage: compensation queue missing, cannot enqueue main-fact retry. session=${sessionId} anchor=${anchorMessageId}`,
+      );
+      return;
+    }
+    await this.rewindCompensationQueue.enqueueRewindMainFact({
+      sessionId,
+      anchorMessageId,
+      requestedAt: new Date().toISOString(),
+      attemptSource,
+    });
+  }
+
+  private async enqueuePersistMessageCompensation(
+    input: Omit<ChatMessage, 'id' | 'createdAt'>,
+    attemptSource: 'service' | 'worker',
+  ): Promise<void> {
+    if (!this.rewindCompensationQueue) {
+      this.logger.error(`saveMessage: compensation queue missing, cannot enqueue persist retry. session=${input.sessionId}`);
+      return;
+    }
+    await this.rewindCompensationQueue.enqueuePersistMessage({
+      sessionId: input.sessionId,
+      userId: input.userId,
+      agentId: input.agentId,
+      agentName: input.agentName,
+      role: input.role,
+      content: input.content,
+      mentionedAgents: input.mentionedAgents ?? [],
+      requestedAt: new Date().toISOString(),
+      attemptSource,
+    });
+  }
+
+  private async enqueueDeleteSessionCompensation(
+    sessionId: string,
+    attemptSource: 'service' | 'worker',
+  ): Promise<void> {
+    if (!this.rewindCompensationQueue) {
+      this.logger.error(`deleteSession: compensation queue missing, cannot enqueue retry. session=${sessionId}`);
+      return;
+    }
+    await this.rewindCompensationQueue.enqueueDeleteSession({
+      sessionId,
       requestedAt: new Date().toISOString(),
       attemptSource,
     });

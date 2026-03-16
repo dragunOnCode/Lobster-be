@@ -7707,3 +7707,9 @@
 {"type":"health_check_completed","durationMs":5218,"totalAgents":3,"unhealthyCount":1,"failedCount":0,"jobId":"repeat:20e1983d4b84151dce59ff9792f14070:1773672600000","timestamp":"2026-03-16T14:50:05.284Z"}
 {"type":"agent_unhealthy","agentId":"gemini-001","agentName":"Gemini","timestamp":"2026-03-16T14:55:05.212Z"}
 {"type":"health_check_completed","durationMs":5142,"totalAgents":3,"unhealthyCount":1,"failedCount":0,"jobId":"repeat:20e1983d4b84151dce59ff9792f14070:1773672900000","timestamp":"2026-03-16T14:55:05.214Z"}
+{"type":"agent_unhealthy","agentId":"gemini-001","agentName":"Gemini","timestamp":"2026-03-16T15:00:05.105Z"}
+{"type":"health_check_completed","durationMs":5074,"totalAgents":3,"unhealthyCount":1,"failedCount":0,"jobId":"repeat:20e1983d4b84151dce59ff9792f14070:1773673200000","timestamp":"2026-03-16T15:00:05.106Z"}
+{"type":"health_check_completed","durationMs":3797,"totalAgents":3,"unhealthyCount":0,"failedCount":0,"jobId":"repeat:20e1983d4b84151dce59ff9792f14070:1773673500000","timestamp":"2026-03-16T15:05:41.028Z"}
+{"type":"health_check_completed","durationMs":3855,"totalAgents":3,"unhealthyCount":0,"failedCount":0,"jobId":"repeat:20e1983d4b84151dce59ff9792f14070:1773673800000","timestamp":"2026-03-16T15:10:03.882Z"}
+{"type":"agent_unhealthy","agentId":"gemini-001","agentName":"Gemini","timestamp":"2026-03-16T15:15:05.350Z"}
+{"type":"health_check_completed","durationMs":5300,"totalAgents":3,"unhealthyCount":1,"failedCount":0,"jobId":"repeat:20e1983d4b84151dce59ff9792f14070:1773674100000","timestamp":"2026-03-16T15:15:05.351Z"}

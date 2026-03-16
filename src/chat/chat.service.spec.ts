@@ -414,4 +414,112 @@ describe('ChatService', () => {
       }),
     );
   });
+
+  it('rewindFromMessage enqueues main-fact compensation when main commit fails', async () => {
+    const rewindCompensationQueue = {
+      enqueueRewindMainFact: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const service = new ChatService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      rewindCompensationQueue,
+    );
+
+    await service.replaceSessionMessages('session-main-fact', [
+      {
+        id: 'u1',
+        sessionId: 'session-main-fact',
+        role: 'user',
+        content: 'q1',
+        createdAt: new Date('2026-03-03T00:00:01.000Z'),
+      },
+    ]);
+    jest
+      .spyOn(service as any, 'replaceSessionMessagesMainFact')
+      .mockRejectedValue(new Error('delete timeout'));
+
+    await expect(service.rewindFromMessage('session-main-fact', 'u1')).rejects.toThrow('delete timeout');
+    expect(rewindCompensationQueue.enqueueRewindMainFact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'session-main-fact',
+        anchorMessageId: 'u1',
+        attemptSource: 'service',
+      }),
+    );
+  });
+
+  it('saveMessage enqueues compensation when DB persistence fails after retries', async () => {
+    const messageRepo = {
+      create: jest.fn().mockImplementation((value) => value),
+      save: jest.fn().mockRejectedValue(new Error('db unavailable')),
+    } as any;
+    const sessionRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'd290f1ee-6c54-4b01-90e6-d701748f0851' }),
+    } as any;
+    const rewindCompensationQueue = {
+      enqueuePersistMessage: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const service = new ChatService(
+      messageRepo,
+      sessionRepo,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      rewindCompensationQueue,
+    );
+
+    await expect(
+      service.saveMessage({
+        sessionId: 'd290f1ee-6c54-4b01-90e6-d701748f0851',
+        role: 'user',
+        content: 'persist me',
+      }),
+    ).rejects.toThrow('db unavailable');
+
+    expect(rewindCompensationQueue.enqueuePersistMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'd290f1ee-6c54-4b01-90e6-d701748f0851',
+        role: 'user',
+        content: 'persist me',
+        attemptSource: 'service',
+      }),
+    );
+  });
+
+  it('deleteSession enqueues compensation when DB delete fails after retries', async () => {
+    const messageRepo = {
+      delete: jest.fn().mockRejectedValue(new Error('delete failed')),
+    } as any;
+    const sessionRepo = {
+      delete: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const rewindCompensationQueue = {
+      enqueueDeleteSession: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const service = new ChatService(
+      messageRepo,
+      sessionRepo,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      rewindCompensationQueue,
+    );
+
+    await expect(service.deleteSession('d290f1ee-6c54-4b01-90e6-d701748f0851')).rejects.toThrow('delete failed');
+    expect(rewindCompensationQueue.enqueueDeleteSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'd290f1ee-6c54-4b01-90e6-d701748f0851',
+        attemptSource: 'service',
+      }),
+    );
+  });
 });
