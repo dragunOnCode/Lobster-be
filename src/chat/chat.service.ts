@@ -7,6 +7,7 @@ import { SharedMemoryService } from '../memory/services/shared-memory.service';
 import { ChromaService } from '../vector/services/chroma.service';
 import { WorkspaceService, SessionInfo, TranscriptEvent } from '../workspace/workspace.service';
 import { ConversationSummaryService } from './conversation-summary.service';
+import { RewindCompensationQueueService } from './rewind-compensation-queue.service';
 
 export interface ChatMessage {
   id: string;
@@ -53,6 +54,7 @@ export class ChatService {
     @Optional() private readonly chromaService?: ChromaService,
     @Optional() private readonly conversationSummaryService?: ConversationSummaryService,
     @Optional() private readonly sharedMemoryService?: SharedMemoryService,
+    @Optional() private readonly rewindCompensationQueue?: RewindCompensationQueueService,
   ) {
     // 调试日志：检查依赖注入状态
     this.logger.log(`Dependency injection status:`);
@@ -63,6 +65,7 @@ export class ChatService {
     this.logger.log(`  - chromaService: ${this.chromaService ? 'OK' : 'MISSING'}`);
     this.logger.log(`  - conversationSummaryService: ${this.conversationSummaryService ? 'OK' : 'MISSING'}`);
     this.logger.log(`  - sharedMemoryService: ${this.sharedMemoryService ? 'OK' : 'MISSING'}`);
+    this.logger.log(`  - rewindCompensationQueue: ${this.rewindCompensationQueue ? 'OK' : 'MISSING'}`);
   }
 
   // 保存对话消息到数据库/JSONL
@@ -222,6 +225,12 @@ export class ChatService {
   }
 
   async replaceSessionMessages(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    const normalized = await this.replaceSessionMessagesMainFact(sessionId, messages);
+    await this.tryReplaceMemory(sessionId, normalized);
+    await this.tryRebuildVectors(sessionId, normalized);
+  }
+
+  private async replaceSessionMessagesMainFact(sessionId: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
     const normalized = [...messages]
       .filter((message) => message.sessionId === sessionId)
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
@@ -249,9 +258,7 @@ export class ChatService {
     } else {
       this.messages.set(sessionId, normalized);
     }
-
-    await this.tryReplaceMemory(sessionId, normalized);
-    await this.tryRebuildVectors(sessionId, normalized);
+    return normalized;
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -265,9 +272,17 @@ export class ChatService {
     if (this.isUuid(normalizedSessionId) && this.sessionRepo) {
       // Keep a defensive message delete for partially inconsistent DB states.
       if (this.messageRepo) {
-        await this.messageRepo.delete({ sessionId: normalizedSessionId });
+        await this.withRetry(
+          `delete-session-messages:${normalizedSessionId}`,
+          () => this.messageRepo!.delete({ sessionId: normalizedSessionId }),
+          { attempts: 3, baseDelayMs: 120 },
+        );
       }
-      await this.sessionRepo.delete({ id: normalizedSessionId });
+      await this.withRetry(
+        `delete-session-row:${normalizedSessionId}`,
+        () => this.sessionRepo!.delete({ id: normalizedSessionId }),
+        { attempts: 3, baseDelayMs: 120 },
+      );
     }
 
     await this.tryReplaceMemory(normalizedSessionId, []);
@@ -299,47 +314,56 @@ export class ChatService {
       `rewindFromMessage: session=${normalizedSessionId} anchor=${normalizedMessageId} kept=${boundary.kept.length} removed=${boundary.removed.length}`,
     );
 
-    /**
-     * 一般做法是按“副作用重要性”分级，不是“一刀切全回滚”。
-      比如，replaceSessionMessages 成功（主事实已写入），tryClearSharedMemory 失败（缓存/派生状态），这种情况不应该回滚 replaceSessionMessages。
-      - 第一步 replaceSessionMessages 成功（主事实已写入）
-      - 第二步 tryClearSharedMemory 失败（缓存/派生状态）
-      
-      在分布式系统里更常见的处理是：
-      1. 主事实优先
-      - 把 DB/主存储当 source of truth。
-      - 主事实成功后，不建议因为缓存失败回滚主事实（否则会放大故障）。
-      2. 派生状态最终一致
-      - 共享内存/缓存/索引清理失败，记为“待修复任务”。
-      - 异步重试（指数退避、有限次数）。
-      - 兜底 TTL + 下次读修复（read-repair）或定时 reconcile。
-      3. 幂等与可观测
-      - 每步幂等（重复清理不出错）。
-      - 打结构化日志和指标（失败率、重试次数、积压量）。
-      - 失败超阈值告警。
-      4. 什么时候才回滚
-      - 只有当后续步骤也是“主事实且强一致”时才考虑整体回滚。
-      - 对缓存/向量索引/transcript 这类派生层，通常不回滚主事实。
-      套到当前回溯功能：
-      - replaceSessionMessages 应定义为主提交点。
-      - tryClearSharedMemory 失败时不该回滚 DB；应进入补偿重试队列。
-      - transcript 如果你把它也视为主审计数据，则可升格为强一致步骤；否则也走最终一致。
-     */
+    await this.withRetry(
+      `rewind-main-fact:${normalizedSessionId}:${normalizedMessageId}`,
+      () => this.replaceSessionMessagesMainFact(normalizedSessionId, boundary.kept),
+      { attempts: 3, baseDelayMs: 150 },
+    );
+
     try {
-      await this.replaceSessionMessages(normalizedSessionId, boundary.kept);
-      await this.tryClearSharedMemory(normalizedSessionId);
-      if (this.workspaceService) {
-        await this.workspaceService.replaceTranscript(normalizedSessionId, filteredTranscript);
-      }
-    } catch (error) {
-      this.logger.error(
-        `rewindFromMessage: apply failed session=${normalizedSessionId}, trying rollback. reason=${error instanceof Error ? error.message : String(error)}`,
+      await this.withRetry(
+        `rewind-derived-sync:${normalizedSessionId}:${normalizedMessageId}`,
+        () =>
+          this.rebuildDerivedStateAfterRewind(
+            normalizedSessionId,
+            normalizedMessageId,
+            'service',
+            boundary.kept,
+            filteredTranscript,
+          ),
+        { attempts: 3, baseDelayMs: 300 },
       );
-      await this.rollbackRewindFailure(normalizedSessionId, fullSessionMessages, transcriptSnapshot);
-      throw error;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `rewindFromMessage: derived sync failed after main commit, enqueue compensation. session=${normalizedSessionId} anchor=${normalizedMessageId} reason=${reason}`,
+      );
+      await this.enqueueDerivedSyncCompensation(normalizedSessionId, normalizedMessageId, 'service');
     }
 
     return { removedCount: boundary.removed.length };
+  }
+
+  async rebuildDerivedStateAfterRewind(
+    sessionId: string,
+    anchorMessageId: string,
+    attemptSource: 'service' | 'worker',
+    preferredMessages?: ChatMessage[],
+    preferredTranscript?: TranscriptEvent[],
+  ): Promise<void> {
+    const currentMessages = preferredMessages ?? (await this.getAllSessionMessages(sessionId));
+    const transcript = preferredTranscript ?? (await this.buildTranscriptFromCurrentMessages(sessionId, currentMessages));
+
+    await this.replaceMemoryStrict(sessionId, currentMessages);
+    await this.rebuildVectorsStrict(sessionId, currentMessages);
+    await this.clearSharedMemoryStrict(sessionId);
+    if (this.workspaceService) {
+      await this.workspaceService.replaceTranscript(sessionId, transcript);
+    }
+
+    this.logger.log(
+      `rewind derived sync success session=${sessionId} anchor=${anchorMessageId} source=${attemptSource} messages=${currentMessages.length}`,
+    );
   }
 
   private generateId(): string {
@@ -623,22 +647,113 @@ export class ChatService {
     });
   }
 
-  private async rollbackRewindFailure(
+  private async buildTranscriptFromCurrentMessages(
     sessionId: string,
-    fullSessionMessages: ChatMessage[],
-    transcriptSnapshot: TranscriptEvent[],
-  ): Promise<void> {
-    try {
-      await this.replaceSessionMessages(sessionId, fullSessionMessages);
-      if (this.workspaceService) {
-        await this.workspaceService.replaceTranscript(sessionId, transcriptSnapshot);
-      }
-      this.logger.warn(`rewindFromMessage: rollback applied for session=${sessionId}`);
-    } catch (rollbackError) {
-      this.logger.error(
-        `rewindFromMessage: rollback failed session=${sessionId}, reason=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
-      );
+    currentMessages: ChatMessage[],
+  ): Promise<TranscriptEvent[]> {
+    const events = await this.readTranscriptSafely(sessionId);
+    if (events.length === 0) {
+      return events;
     }
+
+    const currentIds = new Set(currentMessages.map((message) => message.id));
+    return events.filter((event) => {
+      if (event.type !== 'message_saved') {
+        return true;
+      }
+      const messageId = typeof event.messageId === 'string' ? event.messageId : '';
+      if (!messageId) {
+        return true;
+      }
+      return currentIds.has(messageId);
+    });
+  }
+
+  private async replaceMemoryStrict(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    if (!this.shortTermMemoryService) {
+      return;
+    }
+    if (messages.length === 0) {
+      await this.shortTermMemoryService.clear(sessionId);
+      return;
+    }
+    await this.shortTermMemoryService.save(
+      sessionId,
+      messages.map((item) => this.toMemoryMessage(item)),
+    );
+  }
+
+  private async rebuildVectorsStrict(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    if (!this.chromaService) {
+      return;
+    }
+    await this.chromaService.deleteBySessionId(sessionId);
+    if (messages.length === 0) {
+      return;
+    }
+    await this.chromaService.addDocuments(
+      messages.map((message) => ({
+        id: message.id,
+        content: message.content,
+        metadata: {
+          sessionId: message.sessionId,
+          role: message.role,
+          agentId: message.agentId ?? '',
+          userId: message.userId ?? '',
+          createdAt: message.createdAt.toISOString(),
+        },
+      })),
+    );
+  }
+
+  private async clearSharedMemoryStrict(sessionId: string): Promise<void> {
+    if (!this.sharedMemoryService) {
+      return;
+    }
+    await this.sharedMemoryService.clearSession(sessionId);
+  }
+
+  private async enqueueDerivedSyncCompensation(
+    sessionId: string,
+    anchorMessageId: string,
+    attemptSource: 'service' | 'worker',
+  ): Promise<void> {
+    if (!this.rewindCompensationQueue) {
+      this.logger.error(
+        `rewindFromMessage: compensation queue missing, cannot enqueue. session=${sessionId} anchor=${anchorMessageId}`,
+      );
+      return;
+    }
+    await this.rewindCompensationQueue.enqueueDerivedSync({
+      sessionId,
+      anchorMessageId,
+      requestedAt: new Date().toISOString(),
+      attemptSource,
+    });
+  }
+
+  private async withRetry<T>(
+    label: string,
+    task: () => Promise<T>,
+    options: { attempts: number; baseDelayMs: number },
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
+      try {
+        return await task();
+      } catch (error) {
+        lastError = error;
+        if (attempt >= options.attempts) {
+          break;
+        }
+        const delayMs = options.baseDelayMs * 2 ** (attempt - 1);
+        this.logger.warn(
+          `retry scheduled label=${label} attempt=${attempt}/${options.attempts} nextDelayMs=${delayMs} reason=${error instanceof Error ? error.message : String(error)}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    throw lastError;
   }
 
   private fromTranscriptMessageEvent(

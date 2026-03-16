@@ -363,4 +363,55 @@ describe('ChatService', () => {
     ]);
     expect(sharedMemoryService.clearSession).toHaveBeenCalledWith('session-rewind');
   });
+
+  it('rewindFromMessage enqueues BullMQ compensation when derived sync fails', async () => {
+    const workspaceService = {
+      readTranscript: jest.fn().mockResolvedValue([
+        { type: 'message_saved', messageId: 'u1', role: 'user', content: 'q1', timestamp: '2026-03-03T00:00:01.000Z' },
+      ]),
+      replaceTranscript: jest.fn().mockRejectedValue(new Error('fs down')),
+    } as any;
+    const shortTermMemoryService = {
+      save: jest.fn().mockResolvedValue(undefined),
+      clear: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockResolvedValue([]),
+    } as any;
+    const chromaService = {
+      addDocuments: jest.fn().mockResolvedValue(undefined),
+      deleteBySessionId: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const rewindCompensationQueue = {
+      enqueueDerivedSync: jest.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const service = new ChatService(
+      undefined,
+      undefined,
+      workspaceService,
+      shortTermMemoryService,
+      chromaService,
+      undefined,
+      undefined,
+      rewindCompensationQueue,
+    );
+
+    await service.replaceSessionMessages('session-retry', [
+      {
+        id: 'u1',
+        sessionId: 'session-retry',
+        role: 'user',
+        content: 'q1',
+        createdAt: new Date('2026-03-03T00:00:01.000Z'),
+      },
+    ]);
+
+    await expect(service.rewindFromMessage('session-retry', 'u1')).resolves.toEqual({ removedCount: 1 });
+    expect(rewindCompensationQueue.enqueueDerivedSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'session-retry',
+        anchorMessageId: 'u1',
+        attemptSource: 'service',
+      }),
+    );
+  });
 });
