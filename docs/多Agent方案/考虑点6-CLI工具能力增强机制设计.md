@@ -1,15 +1,7 @@
-# 考虑点6：CLI工具能力增强机制设计
+# 考虑点6：CLI 工具能力增强机制设计
 
-> 文档版本：v1.0
-> 创建日期：2026-03-17
-> 作者：Claude Sonnet 4.6
-
-## 目录
-
-1. [看现状](#看现状)
-2. [看业界](#看业界)
-3. [思考过程](#思考过程)
-4. [给方法](#给方法)
+> 文档版本：v2.0
+> 更新日期：2026-03-18
 
 ---
 
@@ -18,36 +10,30 @@
 ### 当前实现程度
 
 **已实现：**
-- ✅ **CLI集成**：CliRunnerService 支持执行 claude code/codex/gemini cli
-- ✅ **流式输出**：支持异步流式执行，实时获取输出
-- ✅ **超时控制**：可配置超时时间，强制杀死进程
-- ✅ **缓冲区限制**：10MB缓冲区，防止内存溢出
-- ✅ **适配器模式**：ILLMAdapter接口，支持CLI和HTTP两种调用方式
+- ✅ `CliRunnerService`：通过子进程执行 claude/codex/gemini cli，支持流式输出
+- ✅ `ILLMAdapter`：适配器接口，屏蔽不同 CLI 的调用差异
+- ✅ `agents.config.json`：Agent 级别的静态配置（命令、系统提示、优先级等）
 
 **当前缺失：**
-- ❌ **MCP集成**：无法使用CLI工具的MCP服务器能力
-- ❌ **Skills增强**：无法扩展CLI工具的Skills
-- ❌ **工具注册**：无法动态注册自定义工具
-- ❌ **上下文注入**：无法向CLI工具注入额外上下文
-- ❌ **结果解析**：CLI输出是纯文本，缺少结构化解析
+- ❌ 没有 MCP 服务器的注册和管理机制
+- ❌ 没有 Skills/Slash Commands 的注册和管理机制
+- ❌ CLI 启动时无法动态注入会话级别的配置（MCP、权限、工具白名单等）
+- ❌ 开发者无法在不修改代码的情况下为某个 Agent 挂载新的 MCP 服务器
+- ❌ 用户无法在运行时为自己的会话启用/禁用特定工具
 
-### CLI工具能力
+### CLI 工具自身的能力
 
-**Claude Code CLI：**
-- MCP服务器：可以连接外部MCP服务器（数据库、API等）
-- Skills：内置技能系统（/commit, /review-pr等）
-- 工具调用：支持function calling
-- 上下文管理：自动管理对话历史
+这是本考虑点的出发点：**CLI 工具本身已经实现了完整的 Agent 能力**，我们不需要重复造轮子。
 
-**Codex CLI：**
-- 代码分析：静态分析、linting
-- 代码生成：基于模板生成代码
-- 测试运行：执行测试并报告结果
+| 能力 | Claude Code | Codex CLI | Gemini CLI |
+|------|-------------|-----------|------------|
+| MCP 服务器 | ✅ 支持，通过 `~/.claude/settings.json` 配置 | ⚠️ 部分支持 | ⚠️ 部分支持 |
+| Skills/Slash Commands | ✅ 内置 `/commit`、`/review-pr` 等，支持自定义 | ✅ 支持 | ✅ 支持 |
+| 工具调用（Function Calling） | ✅ 原生支持 | ✅ 原生支持 | ✅ 原生支持 |
+| 权限控制 | ✅ `allowedTools`、`blockedTools` | ⚠️ 有限 | ⚠️ 有限 |
+| 配置文件注入 | ✅ `--config`、环境变量 | ✅ 命令行参数 | ✅ 命令行参数 |
 
-**Gemini CLI：**
-- 多模态：支持图片、视频输入
-- 长上下文：支持超长上下文窗口
-- 代码执行：内置Python代码执行环境
+**核心问题**：这些能力都存在，但目前系统在启动 CLI 时是"裸跑"的，没有任何配置注入，等于把 CLI 当成了一个普通的文本生成工具，浪费了它的大量能力。
 
 ---
 
@@ -55,1005 +41,676 @@
 
 ### 业界实践案例
 
-#### 1. **LangChain Tools**
+#### 1. VS Code 扩展市场模式
 
-```python
-from langchain.tools import Tool
+VS Code 本身是编辑器，但通过扩展市场，开发者可以为它注册语言服务器、调试适配器、主题等。用户在工作区级别（`.vscode/settings.json`）或全局级别覆盖配置。
 
-def search_tool(query: str) -> str:
-    return f"Search results for: {query}"
+**启发：** 分层配置模型——全局默认 → Agent 级别 → 会话级别，后者覆盖前者。
 
-tools = [
-    Tool(
-        name="Search",
-        func=search_tool,
-        description="Useful for searching information"
-    )
-]
+#### 2. Claude Code 的 MCP 配置机制
 
-agent = initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION)
-```
-
-**特点：**
-- 简单的函数包装
-- 自动生成工具描述
-- 支持同步和异步
-
-#### 2. **OpenAI Function Calling**
+Claude Code 本身支持在 `~/.claude/settings.json` 中声明 MCP 服务器：
 
 ```json
 {
-  "functions": [
-    {
-      "name": "get_weather",
-      "description": "Get the current weather",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "location": {
-            "type": "string",
-            "description": "The city name"
-          }
-        },
-        "required": ["location"]
-      }
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"]
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": { "POSTGRES_URL": "postgresql://..." }
     }
-  ]
+  }
 }
 ```
 
-**特点：**
-- JSON Schema定义参数
-- LLM自动选择和调用
-- 结构化的输入输出
+CLI 启动时会自动连接这些 MCP 服务器，Agent 就能调用它们暴露的工具。
 
-#### 3. **Anthropic MCP (Model Context Protocol)**
+**启发：** 我们只需要在启动 CLI 前，**动态生成这份配置文件**，就能控制 Agent 能访问哪些工具。
 
-```typescript
-// MCP服务器
-const server = new Server({
-  name: "database-mcp",
-  version: "1.0.0"
-});
+#### 3. Cursor Rules / `.cursorrules`
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "query_database",
-      description: "Execute SQL query",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sql: { type: "string" }
-        }
-      }
-    }
-  ]
-}));
+Cursor 允许在项目根目录放置 `.cursorrules` 文件，定义 AI 的行为规则。这是一种"项目级别的 Prompt 注入"。
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  if (name === "query_database") {
-    const result = await db.query(args.sql);
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
-  }
-});
-```
+**启发：** Skills 的注册可以类比为"给 CLI 注入额外的指令集"，通过配置文件而非代码实现。
 
-**特点：**
-- 标准化的协议
-- 支持工具列表和调用
-- 可扩展的架构
+#### 4. Kubernetes Admission Webhook
 
-#### 4. **AutoGPT Plugins**
+K8s 在 Pod 创建前，通过 Webhook 动态注入 sidecar、环境变量、挂载卷等。这是一种"启动前拦截注入"的模式。
 
-```python
-class MyPlugin(AutoGPTPluginTemplate):
-    def __init__(self):
-        super().__init__()
-        self._name = "MyPlugin"
-        self._version = "0.1.0"
-        self._description = "My custom plugin"
-
-    def can_handle_post_prompt(self) -> bool:
-        return True
-
-    def post_prompt(self, prompt: PromptGenerator) -> PromptGenerator:
-        prompt.add_command(
-            "my_command",
-            "My Command Description",
-            {"arg1": "<arg1>"},
-            self.my_command
-        )
-        return prompt
-
-    def my_command(self, arg1: str) -> str:
-        return f"Result: {arg1}"
-```
-
-**特点：**
-- 插件化架构
-- 生命周期钩子
-- 命令注册机制
-
-#### 5. **LangGraph Tools**
-
-```typescript
-import { tool } from "@langchain/core/tools";
-import { z } from "zod";
-
-const weatherTool = tool(
-  async ({ location }) => {
-    return `Weather in ${location}: Sunny, 25°C`;
-  },
-  {
-    name: "get_weather",
-    description: "Get weather for a location",
-    schema: z.object({
-      location: z.string().describe("City name")
-    })
-  }
-);
-
-// 在图中使用
-const graph = new StateGraph({...});
-graph.addNode("agent", async (state) => {
-  return await model.invoke(state.messages, {
-    tools: [weatherTool]
-  });
-});
-```
-
-**特点：**
-- TypeScript类型安全
-- Zod schema验证
-- 与LangGraph无缝集成
+**启发：** 在 `CliRunnerService` 执行 CLI 命令前，插入一个"配置注入"阶段，动态组装该次执行的完整配置。
 
 ---
 
 ## 思考过程
 
-### 信息启发
+### 核心问题的重新定义
 
-CLI工具的能力增强有两个方向：
-1. **向内增强**：在我们的系统中扩展CLI工具的能力
-2. **向外增强**：利用CLI工具自身的扩展机制（MCP、Skills）
+原始问题是"如何增强 MCP/Skills"，但更准确的表述是：
 
-### 我们的场景特点
+> **如何在业务层建立一套管理机制，让开发者和用户能够声明式地为 CLI 工具注册 MCP 服务器和 Skills，并在 CLI 启动时自动注入？**
 
-1. **CLI工具是黑盒**：我们无法修改CLI工具的内部实现
-2. **需要标准化**：不同CLI工具有不同的接口，需要统一
-3. **需要可扩展**：用户可能需要添加自定义工具
-4. **需要可组合**：工具之间可以组合使用
+这个问题的本质是**配置管理**，而不是工具实现。
 
-### 方案抉择
+### 三个关键决策
 
-| 方案 | 优势 | 劣势 | 适用性 |
-|------|------|------|--------|
-| **包装CLI** | 简单、不侵入 | 功能受限 | ✅ 当前方案 |
-| **MCP集成** | 标准化、强大 | 需要MCP服务器 | ✅ 推荐 |
-| **自定义工具** | 灵活、可控 | 需要开发 | ✅ 补充 |
-| **混合方案** | 全面覆盖 | 复杂度高 | ✅ 最终方案 |
+**决策1：配置的粒度**
 
-### 最终选择
+| 粒度 | 说明 | 适用场景 |
+|------|------|---------|
+| 全局级 | 所有 Agent、所有会话都生效 | 基础工具（文件系统、数据库只读查询） |
+| Agent 级 | 特定 Agent 类型生效 | Claude 专用的代码审查 MCP，Gemini 专用的图像分析 MCP |
+| 会话级 | 特定会话生效 | 用户为自己的项目挂载私有 MCP 服务器 |
 
-**三层工具架构：CLI工具 + MCP服务器 + 自定义工具**
+三层叠加，后者覆盖前者。这是最灵活的模型。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 1: CLI工具（claude code/codex/gemini）                 │
-│  - 使用CLI工具的原生能力                                      │
-│  - 通过命令行参数传递配置                                     │
-└─────────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 2: MCP服务器（扩展CLI工具能力）                        │
-│  - 数据库MCP：查询数据库                                      │
-│  - API MCP：调用外部API                                       │
-│  - 文件系统MCP：高级文件操作                                  │
-└─────────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 3: 自定义工具（系统特定能力）                          │
-│  - 工作区同步工具                                             │
-│  - Agent协作工具                                              │
-│  - 思考追溯工具                                               │
-└─────────────────────────────────────────────────────────────┘
-```
+**决策2：谁来注册**
+
+- **开发者**：通过代码或配置文件，在系统启动时注册内置 MCP 服务器（如工作区 MCP、数据库只读 MCP）
+- **用户**：通过前端 UI 或 API，在会话维度动态添加自己的 MCP 服务器（如连接自己的 GitHub、Notion 等）
+
+**决策3：配置如何注入 CLI**
+
+不同 CLI 的配置注入方式不同：
+- Claude Code：支持 `--config <path>` 指定配置文件，或通过环境变量 `CLAUDE_CONFIG_DIR` 指定配置目录
+- Codex/Gemini：通过命令行参数或环境变量
+
+因此需要一个**适配层**，将统一的内部配置格式转换为各 CLI 的注入方式。
+
+### 取舍标准
+
+1. **不重复造轮子**：MCP 工具调用、Skills 执行都由 CLI 自己完成，我们只管"注册"和"注入"
+2. **声明式优于命令式**：配置写在数据库/配置文件里，而不是硬编码在代码里
+3. **隔离性**：不同会话的 MCP 配置互不干扰，通过临时配置文件实现隔离
+4. **可观测**：记录每次 CLI 启动时注入了哪些 MCP/Skills，便于调试
 
 ---
 
 ## 给方法
 
-### 方案设计：三层工具架构
+### 方案设计：CLI 能力管理层（CLI Capability Manager）
 
-#### Layer 1: CLI工具增强
+#### 整体架构
 
-**配置文件注入**
-
-```typescript
-// src/agents/services/cli-config.service.ts
-
-@Injectable()
-export class CliConfigService {
-  /**
-   * 生成Claude Code配置文件
-   */
-  async generateClaudeConfig(sessionId: string, agentId: string): Promise<string> {
-    const configDir = path.join(os.tmpdir(), `claude-config-${sessionId}`);
-    await fs.mkdir(configDir, { recursive: true });
-
-    const config = {
-      // MCP服务器配置
-      mcpServers: {
-        database: {
-          command: "node",
-          args: [path.join(__dirname, "../mcp-servers/database.js")],
-          env: {
-            DATABASE_URL: process.env.DATABASE_URL,
-            SESSION_ID: sessionId
-          }
-        },
-        workspace: {
-          command: "node",
-          args: [path.join(__dirname, "../mcp-servers/workspace.js")],
-          env: {
-            SESSION_ID: sessionId,
-            AGENT_ID: agentId
-          }
-        }
-      },
-
-      // 自定义Skills
-      skills: {
-        "sync-workspace": {
-          command: "node",
-          args: [path.join(__dirname, "../skills/sync-workspace.js")]
-        }
-      },
-
-      // 其他配置
-      settings: {
-        autoSave: true,
-        theme: "dark",
-        model: "claude-sonnet-4-6"
-      }
-    };
-
-    const configPath = path.join(configDir, "config.json");
-    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
-
-    return configPath;
-  }
-
-  /**
-   * 执行CLI时注入配置
-   */
-  async executeWithConfig(
-    command: string,
-    sessionId: string,
-    agentId: string
-  ): Promise<string> {
-    const configPath = await this.generateClaudeConfig(sessionId, agentId);
-
-    // 设置环境变量指向配置文件
-    const env = {
-      ...process.env,
-      CLAUDE_CONFIG_PATH: configPath
-    };
-
-    return this.cliRunner.execute(command, { env });
-  }
-}
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    业务层（我们负责的部分）                    │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  CliCapabilityManager                               │    │
+│  │  - 三层配置合并（全局 + Agent + 会话）               │    │
+│  │  - 生成临时配置文件                                  │    │
+│  │  - 清理临时文件                                      │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          ↓                                   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  CliConfigAdapter（适配不同 CLI 的注入方式）          │    │
+│  │  - ClaudeConfigAdapter  → --config <path>           │    │
+│  │  - CodexConfigAdapter   → 环境变量 + 参数            │    │
+│  │  - GeminiConfigAdapter  → 环境变量 + 参数            │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          ↓                                   │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  CliRunnerService（现有，增加配置注入钩子）            │    │
+│  └─────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────┘
+                          ↓ 启动 CLI 子进程
+┌──────────────────────────────────────────────────────────────┐
+│              CLI 工具层（厂商实现，我们不修改）               │
+│                                                              │
+│   Claude Code CLI  ←→  MCP Server A  ←→  MCP Server B       │
+│   Codex CLI        ←→  MCP Server C                         │
+│   Gemini CLI       ←→  MCP Server D                         │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-#### Layer 2: MCP服务器实现
+#### 数据库设计
 
-**数据库MCP服务器**
+**表1：mcp_server_registrations（MCP 服务器注册表）**
 
-```typescript
-// src/mcp-servers/database.mcp.ts
+```sql
+CREATE TABLE mcp_server_registrations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema
-} from "@modelcontextprotocol/sdk/types.js";
+  -- 作用域
+  scope VARCHAR(20) NOT NULL, -- 'global' | 'agent' | 'session'
+  scope_id VARCHAR(100),      -- agent_id 或 session_id，global 时为 null
 
-const server = new Server(
-  {
-    name: "database-mcp",
-    version: "1.0.0"
-  },
-  {
-    capabilities: {
-      tools: {}
-    }
-  }
+  -- 适用的 CLI 类型
+  cli_types TEXT[] NOT NULL DEFAULT '{claude,codex,gemini}',
+
+  -- MCP 服务器配置
+  name VARCHAR(100) NOT NULL,       -- 在 CLI 配置中的键名，如 "workspace"
+  display_name VARCHAR(200),        -- 展示给用户的名称
+  description TEXT,
+
+  -- 启动方式
+  transport VARCHAR(20) NOT NULL DEFAULT 'stdio', -- 'stdio' | 'sse'
+  command TEXT,                     -- stdio 模式：启动命令，如 "node"
+  args JSONB,                       -- stdio 模式：参数列表
+  url TEXT,                         -- sse 模式：服务器 URL
+  env JSONB,                        -- 环境变量（支持 ${SESSION_ID} 等占位符）
+
+  -- 权限控制
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  allowed_tools TEXT[],             -- 白名单，null 表示全部允许
+  blocked_tools TEXT[],             -- 黑名单
+
+  -- 元数据
+  created_by VARCHAR(100),          -- 'system' | user_id
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
 );
 
-// 列出可用工具
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "query_messages",
-      description: "Query messages from the database",
-      inputSchema: {
-        type: "object",
-        properties: {
-          sessionId: {
-            type: "string",
-            description: "Session ID"
-          },
-          limit: {
-            type: "number",
-            description: "Number of messages to return",
-            default: 10
-          }
-        },
-        required: ["sessionId"]
-      }
-    },
-    {
-      name: "get_agent_info",
-      description: "Get information about an agent",
-      inputSchema: {
-        type: "object",
-        properties: {
-          agentId: {
-            type: "string",
-            description: "Agent ID"
-          }
-        },
-        required: ["agentId"]
-      }
+CREATE INDEX idx_mcp_registrations_scope ON mcp_server_registrations(scope, scope_id);
+CREATE INDEX idx_mcp_registrations_cli ON mcp_server_registrations USING GIN(cli_types);
+```
+
+**表2：skill_registrations（Skills 注册表）**
+
+```sql
+CREATE TABLE skill_registrations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- 作用域（同上）
+  scope VARCHAR(20) NOT NULL,
+  scope_id VARCHAR(100),
+
+  -- 适用的 CLI 类型
+  cli_types TEXT[] NOT NULL DEFAULT '{claude}',
+
+  -- Skill 配置
+  name VARCHAR(100) NOT NULL,       -- slash command 名称，如 "sync-workspace"
+  display_name VARCHAR(200),
+  description TEXT,
+
+  -- 执行方式（Claude Code Skills 格式）
+  command TEXT NOT NULL,            -- 执行命令
+  args JSONB,
+
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_by VARCHAR(100),
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_skill_registrations_scope ON skill_registrations(scope, scope_id);
+```
+
+#### 核心服务实现
+
+**CliCapabilityManager**
+
+```typescript
+// src/agents/services/cli-capability-manager.service.ts
+
+@Injectable()
+export class CliCapabilityManagerService {
+  constructor(
+    @InjectRepository(McpServerRegistration)
+    private readonly mcpRepo: Repository<McpServerRegistration>,
+    @InjectRepository(SkillRegistration)
+    private readonly skillRepo: Repository<SkillRegistration>
+  ) {}
+
+  /**
+   * 为一次 CLI 执行解析出完整的能力配置
+   * 合并顺序：全局 → Agent 级 → 会话级（后者覆盖前者）
+   */
+  async resolveCapabilities(
+    cliType: 'claude' | 'codex' | 'gemini',
+    agentId: string,
+    sessionId: string
+  ): Promise<ResolvedCapabilities> {
+    // 查询三层 MCP 注册
+    const mcpRegistrations = await this.mcpRepo.find({
+      where: [
+        { scope: 'global', enabled: true },
+        { scope: 'agent', scopeId: agentId, enabled: true },
+        { scope: 'session', scopeId: sessionId, enabled: true }
+      ]
+    });
+
+    // 过滤出支持当前 CLI 类型的注册
+    const applicableMcps = mcpRegistrations.filter(r =>
+      r.cliTypes.includes(cliType)
+    );
+
+    // 合并（同名的后者覆盖前者）
+    const mcpMap = new Map<string, McpServerRegistration>();
+    for (const reg of applicableMcps) {
+      mcpMap.set(reg.name, reg);
     }
-  ]
-}));
 
-// 处理工具调用
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+    // 同理处理 Skills
+    const skillRegistrations = await this.skillRepo.find({
+      where: [
+        { scope: 'global', enabled: true },
+        { scope: 'agent', scopeId: agentId, enabled: true },
+        { scope: 'session', scopeId: sessionId, enabled: true }
+      ]
+    });
 
-  switch (name) {
-    case "query_messages": {
-      const messages = await queryMessages(args.sessionId, args.limit || 10);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(messages, null, 2)
-          }
-        ]
-      };
-    }
+    const applicableSkills = skillRegistrations.filter(r =>
+      r.cliTypes.includes(cliType)
+    );
 
-    case "get_agent_info": {
-      const agent = await getAgentInfo(args.agentId);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(agent, null, 2)
-          }
-        ]
-      };
-    }
-
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+    return {
+      mcpServers: Array.from(mcpMap.values()),
+      skills: applicableSkills
+    };
   }
-});
 
-// 启动服务器
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Database MCP server running on stdio");
-}
+  /**
+   * 将占位符替换为实际值
+   * 支持 ${SESSION_ID}、${AGENT_ID}、${WORKSPACE_PATH} 等
+   */
+  interpolateEnv(
+    env: Record<string, string>,
+    context: { sessionId: string; agentId: string; workspacePath: string }
+  ): Record<string, string> {
+    const replacements: Record<string, string> = {
+      SESSION_ID: context.sessionId,
+      AGENT_ID: context.agentId,
+      WORKSPACE_PATH: context.workspacePath
+    };
 
-main().catch(console.error);
-
-// 辅助函数
-async function queryMessages(sessionId: string, limit: number) {
-  // 连接数据库并查询
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const result = await pool.query(
-    `SELECT * FROM messages WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2`,
-    [sessionId, limit]
-  );
-  await pool.end();
-  return result.rows;
-}
-
-async function getAgentInfo(agentId: string) {
-  // 从配置文件读取Agent信息
-  const config = JSON.parse(
-    await fs.readFile("config/agents.config.json", "utf-8")
-  );
-  return config.agents.find((a: any) => a.id === agentId);
+    return Object.fromEntries(
+      Object.entries(env).map(([k, v]) => [
+        k,
+        v.replace(/\$\{(\w+)\}/g, (_, key) => replacements[key] ?? '')
+      ])
+    );
+  }
 }
 ```
 
-**工作区MCP服务器**
+**ClaudeConfigAdapter（以 Claude Code 为例）**
+
+```typescript
+// src/agents/adapters/cli-config/claude-config.adapter.ts
+
+@Injectable()
+export class ClaudeConfigAdapter {
+  constructor(
+    private readonly capabilityManager: CliCapabilityManagerService
+  ) {}
+
+  /**
+   * 生成 Claude Code 的临时配置文件，返回注入参数
+   */
+  async buildInjectArgs(
+    agentId: string,
+    sessionId: string,
+    workspacePath: string
+  ): Promise<{ args: string[]; env: Record<string, string>; cleanup: () => Promise<void> }> {
+    const capabilities = await this.capabilityManager.resolveCapabilities(
+      'claude', agentId, sessionId
+    );
+
+    // 构建 Claude Code settings.json 格式
+    const settings: ClaudeSettings = {
+      mcpServers: {},
+      skills: {}
+    };
+
+    for (const mcp of capabilities.mcpServers) {
+      const resolvedEnv = mcp.env
+        ? this.capabilityManager.interpolateEnv(mcp.env as Record<string, string>, {
+            sessionId, agentId, workspacePath
+          })
+        : {};
+
+      if (mcp.transport === 'stdio') {
+        settings.mcpServers[mcp.name] = {
+          command: mcp.command!,
+          args: (mcp.args as string[]) ?? [],
+          env: resolvedEnv
+        };
+      } else {
+        settings.mcpServers[mcp.name] = {
+          url: mcp.url!,
+          env: resolvedEnv
+        };
+      }
+    }
+
+    for (const skill of capabilities.skills) {
+      settings.skills[skill.name] = {
+        command: skill.command,
+        args: (skill.args as string[]) ?? []
+      };
+    }
+
+    // 写入临时配置目录（每次执行独立隔离）
+    const configDir = path.join(
+      os.tmpdir(),
+      `claude-cfg-${sessionId}-${Date.now()}`
+    );
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'settings.json'),
+      JSON.stringify(settings, null, 2)
+    );
+
+    return {
+      args: ['--config', configDir],
+      env: {},
+      cleanup: async () => {
+        await fs.rm(configDir, { recursive: true, force: true });
+      }
+    };
+  }
+}
+```
+
+**CliRunnerService 增加注入钩子**
+
+```typescript
+// src/agents/services/cli-runner.service.ts（增强部分）
+
+@Injectable()
+export class CliRunnerService {
+  constructor(
+    private readonly claudeConfigAdapter: ClaudeConfigAdapter
+    // 后续可注入 CodexConfigAdapter、GeminiConfigAdapter
+  ) {}
+
+  async streamGenerateWithCapabilities(
+    baseCommand: string,
+    cliType: 'claude' | 'codex' | 'gemini',
+    agentId: string,
+    sessionId: string,
+    workspacePath: string,
+    options: CliRunnerOptions
+  ): Promise<AsyncIterable<string>> {
+    // 1. 获取注入配置
+    const inject = await this.getInjectConfig(cliType, agentId, sessionId, workspacePath);
+
+    // 2. 拼接最终命令和环境变量
+    const finalCommand = `${baseCommand} ${inject.args.join(' ')}`;
+    const finalEnv = { ...process.env, ...inject.env };
+
+    try {
+      // 3. 执行
+      return this.streamGenerate(finalCommand, { ...options, env: finalEnv });
+    } finally {
+      // 4. 清理临时文件
+      await inject.cleanup();
+    }
+  }
+
+  private async getInjectConfig(
+    cliType: string,
+    agentId: string,
+    sessionId: string,
+    workspacePath: string
+  ) {
+    switch (cliType) {
+      case 'claude':
+        return this.claudeConfigAdapter.buildInjectArgs(agentId, sessionId, workspacePath);
+      // case 'codex': return this.codexConfigAdapter.buildInjectArgs(...)
+      // case 'gemini': return this.geminiConfigAdapter.buildInjectArgs(...)
+      default:
+        return { args: [], env: {}, cleanup: async () => {} };
+    }
+  }
+}
+```
+
+#### 管理 API
+
+**开发者注册内置 MCP（系统启动时）**
+
+```typescript
+// src/agents/bootstrap/register-builtin-capabilities.ts
+
+export async function registerBuiltinCapabilities(
+  mcpRepo: Repository<McpServerRegistration>,
+  skillRepo: Repository<SkillRegistration>
+) {
+  // 全局 MCP：工作区文件访问
+  await mcpRepo.upsert({
+    scope: 'global',
+    cliTypes: ['claude', 'codex', 'gemini'],
+    name: 'workspace',
+    displayName: '工作区文件系统',
+    description: '允许 Agent 读写当前会话的工作区文件',
+    transport: 'stdio',
+    command: 'node',
+    args: [path.resolve(__dirname, '../../mcp-servers/workspace.mcp.js')],
+    env: {
+      SESSION_ID: '${SESSION_ID}',
+      WORKSPACE_PATH: '${WORKSPACE_PATH}'
+    },
+    createdBy: 'system'
+  }, ['scope', 'name']);
+
+  // 全局 MCP：数据库只读查询（仅 Claude）
+  await mcpRepo.upsert({
+    scope: 'global',
+    cliTypes: ['claude'],
+    name: 'db-readonly',
+    displayName: '数据库只读查询',
+    description: '允许 Agent 查询会话历史、Agent 状态等',
+    transport: 'stdio',
+    command: 'node',
+    args: [path.resolve(__dirname, '../../mcp-servers/db-readonly.mcp.js')],
+    env: {
+      DATABASE_URL: process.env.DATABASE_URL!,
+      SESSION_ID: '${SESSION_ID}'
+    },
+    createdBy: 'system'
+  }, ['scope', 'name']);
+
+  // 全局 Skill：同步工作区
+  await skillRepo.upsert({
+    scope: 'global',
+    cliTypes: ['claude'],
+    name: 'sync-workspace',
+    displayName: '同步工作区',
+    description: '将本地工作区变更同步到远程存储',
+    command: 'node',
+    args: [path.resolve(__dirname, '../../skills/sync-workspace.js')],
+    createdBy: 'system'
+  }, ['scope', 'name']);
+}
+```
+
+**用户通过 API 为会话挂载自定义 MCP**
+
+```typescript
+// src/agents/controllers/mcp-registration.controller.ts
+
+@Controller('sessions/:sessionId/mcp')
+export class McpRegistrationController {
+  constructor(
+    @InjectRepository(McpServerRegistration)
+    private readonly mcpRepo: Repository<McpServerRegistration>
+  ) {}
+
+  @Post()
+  async registerMcp(
+    @Param('sessionId') sessionId: string,
+    @Body() dto: RegisterMcpDto,
+    @CurrentUser() user: User
+  ) {
+    // 验证用户有权操作该会话
+    await this.sessionGuard.assertOwner(sessionId, user.id);
+
+    return this.mcpRepo.save({
+      scope: 'session',
+      scopeId: sessionId,
+      cliTypes: dto.cliTypes ?? ['claude'],
+      name: dto.name,
+      displayName: dto.displayName,
+      description: dto.description,
+      transport: dto.transport,
+      command: dto.command,
+      args: dto.args,
+      url: dto.url,
+      env: dto.env,
+      createdBy: user.id
+    });
+  }
+
+  @Get()
+  async listMcp(@Param('sessionId') sessionId: string) {
+    return this.mcpRepo.find({
+      where: { scope: 'session', scopeId: sessionId }
+    });
+  }
+
+  @Delete(':id')
+  async removeMcp(
+    @Param('sessionId') sessionId: string,
+    @Param('id') id: string
+  ) {
+    await this.mcpRepo.delete({ id, scope: 'session', scopeId: sessionId });
+  }
+}
+```
+
+#### 内置 MCP 服务器实现
+
+这是我们需要自己实现的部分——**暴露系统内部能力给 CLI 工具**。
+
+**工作区 MCP（workspace.mcp.ts）**
 
 ```typescript
 // src/mcp-servers/workspace.mcp.ts
 
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+
+const sessionId = process.env.SESSION_ID!;
+const workspacePath = process.env.WORKSPACE_PATH!;
+
+const server = new Server({ name: 'workspace', version: '1.0.0' }, {
+  capabilities: { tools: {} }
+});
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "list_files",
-      description: "List all files in the workspace",
+      name: 'list_workspace_files',
+      description: '列出工作区文件树',
       inputSchema: {
-        type: "object",
+        type: 'object',
         properties: {
-          path: {
-            type: "string",
-            description: "Directory path (relative to workspace root)",
-            default: "."
-          }
+          path: { type: 'string', description: '子目录路径，默认为根目录', default: '.' }
         }
       }
     },
     {
-      name: "read_file",
-      description: "Read file content",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "File path"
-          }
-        },
-        required: ["path"]
-      }
-    },
-    {
-      name: "write_file",
-      description: "Write content to file",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "File path"
-          },
-          content: {
-            type: "string",
-            description: "File content"
-          }
-        },
-        required: ["path", "content"]
-      }
-    },
-    {
-      name: "sync_workspace",
-      description: "Sync workspace with remote storage",
-      inputSchema: {
-        type: "object",
-        properties: {
-          direction: {
-            type: "string",
-            enum: ["upload", "download"],
-            description: "Sync direction"
-          }
-        },
-        required: ["direction"]
-      }
+      name: 'get_session_context',
+      description: '获取当前会话的上下文信息（参与的 Agent、最近消息摘要等）',
+      inputSchema: { type: 'object', properties: {} }
     }
   ]
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  const sessionId = process.env.SESSION_ID!;
+server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const { name, arguments: args } = req.params;
 
-  switch (name) {
-    case "list_files": {
-      const files = await workspaceSyncService.getFileList(sessionId, args.path || ".");
-      return {
-        content: [{ type: "text", text: JSON.stringify(files, null, 2) }]
-      };
-    }
-
-    case "read_file": {
-      const content = await workspaceSyncService.readFile(sessionId, args.path);
-      return {
-        content: [{ type: "text", text: content }]
-      };
-    }
-
-    case "write_file": {
-      await workspaceSyncService.writeFile(sessionId, args.path, args.content);
-      return {
-        content: [{ type: "text", text: "File written successfully" }]
-      };
-    }
-
-    case "sync_workspace": {
-      if (args.direction === "upload") {
-        await workspaceSyncService.uploadChanges(sessionId, "./", agentId, machineId);
-      } else {
-        await workspaceSyncService.downloadWorkspace(sessionId, "./");
-      }
-      return {
-        content: [{ type: "text", text: `Workspace synced (${args.direction})` }]
-      };
-    }
-
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+  if (name === 'list_workspace_files') {
+    const targetPath = path.join(workspacePath, args?.path ?? '.');
+    const tree = await buildFileTree(targetPath);
+    return { content: [{ type: 'text', text: JSON.stringify(tree, null, 2) }] };
   }
+
+  if (name === 'get_session_context') {
+    const context = await fetchSessionContext(sessionId);
+    return { content: [{ type: 'text', text: JSON.stringify(context, null, 2) }] };
+  }
+
+  throw new Error(`Unknown tool: ${name}`);
 });
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
 ```
 
-#### Layer 3: 自定义工具注册
-
-**工具注册表**
-
-```typescript
-// src/agents/services/tool-registry.service.ts
-
-export interface CustomTool {
-  name: string;
-  description: string;
-  inputSchema: JSONSchema;
-  handler: (args: any, context: ToolContext) => Promise<any>;
-}
-
-export interface ToolContext {
-  sessionId: string;
-  agentId: string;
-  userId?: string;
-}
-
-@Injectable()
-export class ToolRegistryService {
-  private tools = new Map<string, CustomTool>();
-
-  /**
-   * 注册自定义工具
-   */
-  registerTool(tool: CustomTool): void {
-    this.tools.set(tool.name, tool);
-  }
-
-  /**
-   * 获取所有工具
-   */
-  getAllTools(): CustomTool[] {
-    return Array.from(this.tools.values());
-  }
-
-  /**
-   * 执行工具
-   */
-  async executeTool(
-    name: string,
-    args: any,
-    context: ToolContext
-  ): Promise<any> {
-    const tool = this.tools.get(name);
-    if (!tool) {
-      throw new Error(`Tool not found: ${name}`);
-    }
-
-    return tool.handler(args, context);
-  }
-
-  /**
-   * 生成工具描述（用于Prompt）
-   */
-  generateToolDescriptions(): string {
-    return this.getAllTools()
-      .map(tool => {
-        return `
-## ${tool.name}
-${tool.description}
-
-Parameters:
-${JSON.stringify(tool.inputSchema, null, 2)}
-`;
-      })
-      .join("\n");
-  }
-}
-```
-
-**内置工具定义**
-
-```typescript
-// src/agents/tools/builtin-tools.ts
-
-export function registerBuiltinTools(registry: ToolRegistryService) {
-  // 工具1：查询会话历史
-  registry.registerTool({
-    name: "query_session_history",
-    description: "Query conversation history for the current session",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Number of messages to return",
-          default: 10
-        },
-        role: {
-          type: "string",
-          enum: ["user", "assistant", "system"],
-          description: "Filter by message role"
-        }
-      }
-    },
-    handler: async (args, context) => {
-      const messages = await messageRepository.find({
-        where: {
-          sessionId: context.sessionId,
-          ...(args.role && { role: args.role })
-        },
-        order: { createdAt: "DESC" },
-        take: args.limit || 10
-      });
-      return messages;
-    }
-  });
-
-  // 工具2：获取其他Agent的状态
-  registry.registerTool({
-    name: "get_agent_status",
-    description: "Get the current status of another agent",
-    inputSchema: {
-      type: "object",
-      properties: {
-        agentId: {
-          type: "string",
-          description: "Agent ID"
-        }
-      },
-      required: ["agentId"]
-    },
-    handler: async (args, context) => {
-      const agent = await agentRegistry.getAgent(args.agentId);
-      const recentTasks = await agentTaskRepository.find({
-        where: {
-          assignedAgentId: args.agentId,
-          sessionId: context.sessionId
-        },
-        order: { createdAt: "DESC" },
-        take: 5
-      });
-      return {
-        agent: {
-          id: agent.id,
-          name: agent.name,
-          type: agent.type,
-          status: agent.status
-        },
-        recentTasks: recentTasks.map(t => ({
-          id: t.id,
-          description: t.taskDescription,
-          status: t.status
-        }))
-      };
-    }
-  });
-
-  // 工具3：创建握手任务
-  registry.registerTool({
-    name: "handoff_to_agent",
-    description: "Hand off the current task to another agent",
-    inputSchema: {
-      type: "object",
-      properties: {
-        targetAgentId: {
-          type: "string",
-          description: "Target agent ID"
-        },
-        reason: {
-          type: "string",
-          description: "Reason for handoff"
-        },
-        context: {
-          type: "object",
-          description: "Additional context to pass"
-        }
-      },
-      required: ["targetAgentId", "reason"]
-    },
-    handler: async (args, context) => {
-      const handoffTask = await handoffService.createHandoffTask({
-        sessionId: context.sessionId,
-        sourceAgentId: context.agentId,
-        targetAgentId: args.targetAgentId,
-        reason: args.reason,
-        context: args.context
-      });
-      return {
-        success: true,
-        taskId: handoffTask.id
-      };
-    }
-  });
-
-  // 工具4：查询思考轨迹
-  registry.registerTool({
-    name: "query_thought_trace",
-    description: "Query the thought trace for a specific task or message",
-    inputSchema: {
-      type: "object",
-      properties: {
-        messageId: {
-          type: "string",
-          description: "Message ID"
-        },
-        taskId: {
-          type: "string",
-          description: "Task ID"
-        }
-      }
-    },
-    handler: async (args, context) => {
-      if (args.messageId) {
-        return thoughtQueryService.getThoughtChain(args.messageId);
-      } else if (args.taskId) {
-        return thoughtQueryService.getTraceForTask(args.taskId);
-      }
-      throw new Error("Either messageId or taskId must be provided");
-    }
-  });
-}
-```
-
-#### 工具调用流程
-
-**在Prompt中注入工具描述**
-
-```typescript
-// src/agents/services/prompt-builder.service.ts
-
-@Injectable()
-export class PromptBuilderService {
-  constructor(
-    private readonly toolRegistry: ToolRegistryService
-  ) {}
-
-  buildPromptWithTools(
-    basePrompt: string,
-    context: ToolContext
-  ): string {
-    const toolDescriptions = this.toolRegistry.generateToolDescriptions();
-
-    return `
-${basePrompt}
-
-# Available Tools
-
-You have access to the following tools:
-
-${toolDescriptions}
-
-To use a tool, output:
-
-TOOL_CALL: {
-  "name": "tool_name",
-  "arguments": {
-    "arg1": "value1"
-  }
-}
-
-The tool result will be provided in the next message.
-`;
-  }
-}
-```
-
-**解析和执行工具调用**
-
-```typescript
-// src/agents/services/tool-executor.service.ts
-
-@Injectable()
-export class ToolExecutorService {
-  constructor(
-    private readonly toolRegistry: ToolRegistryService
-  ) {}
-
-  /**
-   * 从Agent响应中提取工具调用
-   */
-  extractToolCalls(content: string): ToolCall[] {
-    const toolCallRegex = /TOOL_CALL:\s*(\{[\s\S]*?\})/g;
-    const calls: ToolCall[] = [];
-
-    let match;
-    while ((match = toolCallRegex.exec(content)) !== null) {
-      try {
-        const call = JSON.parse(match[1]);
-        calls.push(call);
-      } catch (e) {
-        console.error("Failed to parse tool call:", match[1]);
-      }
-    }
-
-    return calls;
-  }
-
-  /**
-   * 执行所有工具调用
-   */
-  async executeToolCalls(
-    calls: ToolCall[],
-    context: ToolContext
-  ): Promise<ToolResult[]> {
-    return Promise.all(
-      calls.map(async (call) => {
-        try {
-          const result = await this.toolRegistry.executeTool(
-            call.name,
-            call.arguments,
-            context
-          );
-          return {
-            toolName: call.name,
-            success: true,
-            result
-          };
-        } catch (error) {
-          return {
-            toolName: call.name,
-            success: false,
-            error: error.message
-          };
-        }
-      })
-    );
-  }
-
-  /**
-   * 格式化工具结果为文本
-   */
-  formatToolResults(results: ToolResult[]): string {
-    return results
-      .map(r => {
-        if (r.success) {
-          return `
-TOOL_RESULT (${r.toolName}):
-${JSON.stringify(r.result, null, 2)}
-`;
-        } else {
-          return `
-TOOL_ERROR (${r.toolName}):
-${r.error}
-`;
-        }
-      })
-      .join("\n");
-  }
-}
-```
-
-#### 集成到ReAct循环
-
-```typescript
-// src/langgraph/nodes/react-with-tools.node.ts
-
-async function thinkNode(state: ReactState) {
-  const agent = await agentRegistry.getAgent(state.agentId);
-
-  // 构建带工具的Prompt
-  const prompt = promptBuilder.buildPromptWithTools(
-    buildBasePrompt(state),
-    {
-      sessionId: state.sessionId,
-      agentId: state.agentId
-    }
-  );
-
-  const response = await agent.invoke(prompt);
-
-  // 提取工具调用
-  const toolCalls = toolExecutor.extractToolCalls(response.content);
-
-  if (toolCalls.length > 0) {
-    // 执行工具
-    const toolResults = await toolExecutor.executeToolCalls(toolCalls, {
-      sessionId: state.sessionId,
-      agentId: state.agentId
-    });
-
-    // 将工具结果添加到上下文
-    const toolResultText = toolExecutor.formatToolResults(toolResults);
-
-    // 再次调用Agent，让它处理工具结果
-    const followUpPrompt = `
-${response.content}
-
-${toolResultText}
-
-Please continue based on the tool results.
-`;
-
-    const followUpResponse = await agent.invoke(followUpPrompt);
-
-    return {
-      reactSteps: [
-        {
-          type: "think",
-          content: response.content,
-          toolCalls,
-          toolResults
-        },
-        {
-          type: "think",
-          content: followUpResponse.content
-        }
-      ]
-    };
-  }
-
-  return {
-    reactSteps: [
-      {
-        type: "think",
-        content: response.content
-      }
-    ]
-  };
-}
-```
-
-#### 配置管理
+#### 配置文件（开发者视角）
 
 ```json
-// config/tools.config.json
+// config/capabilities.config.json
+// 开发者在这里声明系统内置的 MCP 和 Skills，无需修改代码
+
 {
-  "mcpServers": {
-    "database": {
-      "enabled": true,
+  "mcpServers": [
+    {
+      "scope": "global",
+      "cliTypes": ["claude", "codex", "gemini"],
+      "name": "workspace",
+      "displayName": "工作区文件系统",
+      "transport": "stdio",
       "command": "node",
-      "args": ["dist/mcp-servers/database.mcp.js"]
+      "args": ["dist/mcp-servers/workspace.mcp.js"],
+      "env": {
+        "SESSION_ID": "${SESSION_ID}",
+        "WORKSPACE_PATH": "${WORKSPACE_PATH}"
+      }
     },
-    "workspace": {
-      "enabled": true,
+    {
+      "scope": "global",
+      "cliTypes": ["claude"],
+      "name": "db-readonly",
+      "displayName": "数据库只读查询",
+      "transport": "stdio",
       "command": "node",
-      "args": ["dist/mcp-servers/workspace.mcp.js"]
+      "args": ["dist/mcp-servers/db-readonly.mcp.js"],
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL}",
+        "SESSION_ID": "${SESSION_ID}"
+      }
     }
-  },
-  "customTools": {
-    "query_session_history": { "enabled": true },
-    "get_agent_status": { "enabled": true },
-    "handoff_to_agent": { "enabled": true },
-    "query_thought_trace": { "enabled": true }
-  },
-  "toolCallTimeout": 30000,
-  "maxToolCallsPerTurn": 10
+  ],
+  "skills": [
+    {
+      "scope": "global",
+      "cliTypes": ["claude"],
+      "name": "sync-workspace",
+      "displayName": "同步工作区到远程",
+      "command": "node",
+      "args": ["dist/skills/sync-workspace.js"]
+    }
+  ]
 }
 ```
 
-#### 监控和日志
+#### 执行流程总结
 
-```typescript
-// 记录工具调用
-await toolCallLogRepository.save({
-  sessionId: context.sessionId,
-  agentId: context.agentId,
-  toolName: call.name,
-  arguments: call.arguments,
-  result: result,
-  success: true,
-  durationMs: Date.now() - startTime
-});
+```
+用户发送消息 → Agent 被触发
+    ↓
+CliRunnerService.streamGenerateWithCapabilities()
+    ↓
+CliCapabilityManager.resolveCapabilities(cliType, agentId, sessionId)
+    ↓ 查询数据库，合并三层配置
+ClaudeConfigAdapter.buildInjectArgs()
+    ↓ 生成临时 settings.json，写入 /tmp/claude-cfg-{sessionId}-{ts}/
+CLI 子进程启动：claude --config /tmp/claude-cfg-xxx/ "..."
+    ↓ Claude Code 自动连接 MCP 服务器，加载 Skills
+Agent 执行任务，可调用 MCP 工具（list_workspace_files 等）
+    ↓
+执行完成，清理临时配置目录
+```
 
-// 统计工具使用情况
-const stats = await toolCallLogRepository
-  .createQueryBuilder("log")
-  .select("log.tool_name", "toolName")
-  .addSelect("COUNT(*)", "count")
-  .addSelect("AVG(log.duration_ms)", "avgDuration")
-  .where("log.session_id = :sessionId", { sessionId })
-  .groupBy("log.tool_name")
-  .getRawMany();
+#### 可观测性
+
+```sql
+-- 记录每次 CLI 启动时注入的能力快照，便于调试
+CREATE TABLE cli_capability_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id UUID NOT NULL,
+  agent_id VARCHAR(50) NOT NULL,
+  cli_type VARCHAR(20) NOT NULL,
+  injected_mcp_servers JSONB NOT NULL,  -- 实际注入的 MCP 列表
+  injected_skills JSONB NOT NULL,       -- 实际注入的 Skills 列表
+  config_path TEXT,                     -- 临时配置文件路径（调试用）
+  created_at TIMESTAMP DEFAULT NOW()
+);
 ```
